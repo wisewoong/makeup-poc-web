@@ -68,7 +68,7 @@ textarea{width:100%;height:120px;font:12px/1.4 ui-monospace,Menlo,monospace;bord
     <label class="t"><input type="checkbox" id="tts" checked> 음성 안내</label>
   </div>
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
-  <p class="small" id="loadMsg">v17 · 11-22</p>
+  <p class="small" id="loadMsg">v18 · 11-22</p>
 </div>
 
 <div id="panel" hidden>
@@ -76,6 +76,7 @@ textarea{width:100%;height:120px;font:12px/1.4 ui-monospace,Menlo,monospace;bord
   <div id="view"></div>
   <div class="row" style="margin-top:6px">
     <label class="t"><input type="checkbox" id="showPts"> 판정 지점 보기</label>
+    <label class="t"><input type="checkbox" id="showMap" checked> 변화 지도 보기</label>
     <label class="t"><input type="checkbox" id="fillZone"> 영역 색 채우기</label>
   </div>
 </div>
@@ -195,7 +196,7 @@ function sampleLab(img,p,r){
   for(let y=y0;y<=y1;y+=2)for(let x=x0;x<=x1;x+=2){const k=(y*W+x)*4;const q=rgb2lab(d[k],d[k+1],d[k+2]);L+=q[0];a+=q[1];b+=q[2];n++}
   return n?[L/n,a/n,b/n]:[0,0,0];
 }
-function measure(){
+function measure(full){ // full: 얼굴 전체 랜드마크 468곳 색도 측정 (변화 지도용, 기준 저장·판정 때만)
   if(!lm) return null;
   // 얼굴 둘레만 잘라 읽기 (전체 화면을 읽으면 iOS에서 프레임이 크게 끊김)
   let x0=1,y0=1,x1=0,y1=0; for(const q of lm){if(q.x<x0)x0=q.x;if(q.x>x1)x1=q.x;if(q.y<y0)y0=q.y;if(q.y>y1)y1=q.y}
@@ -210,14 +211,16 @@ function measure(){
   const fh=m(z.fh); const fhA=fh.reduce((s,q)=>s+q[1],0)/fh.length, fhL=fh.reduce((s,q)=>s+q[0],0)/fh.length, fhB=fh.reduce((s,q)=>s+q[2],0)/fh.length;
   const nose=P(NOSE), yaw=(nose.x-(P(FACE_L).x+P(FACE_R).x)/2)/(fw/2); // 0=정면, ±=좌우로 돌림
   return {fw, fwRatio:fw/cv.width, fhA, fhL, fhB, yaw,
-    left:{inner:m(z.left.inner), outer:m(z.left.outer)}, right:{inner:m(z.right.inner), outer:m(z.right.outer)}};
+    left:{inner:m(z.left.inner), outer:m(z.left.outer)}, right:{inner:m(z.right.inner), outer:m(z.right.outer)},
+    all: full ? lm.slice(0,468).map((_,i)=>sampleLab(img,P(i),r)) : null};
 }
 function averageMeasures(list){
   const avg=arrs=>arrs[0].map((_,i)=>[0,1,2].map(k=>arrs.reduce((s,a)=>s+a[i][k],0)/arrs.length));
   const mean=k=>list.reduce((s,m)=>s+m[k],0)/list.length;
   return {fhA:mean('fhA'), fhL:mean('fhL'), fhB:mean('fhB'), yaw:mean('yaw'), fwRatio:mean('fwRatio'),
     left:{inner:avg(list.map(m=>m.left.inner)),outer:avg(list.map(m=>m.left.outer))},
-    right:{inner:avg(list.map(m=>m.right.inner)),outer:avg(list.map(m=>m.right.outer))}};
+    right:{inner:avg(list.map(m=>m.right.inner)),outer:avg(list.map(m=>m.right.outer))},
+    all: list.every(m=>m.all)?avg(list.map(m=>m.all)):null};
 }
 function evaluate(cur){
   const th=TH[$('strength').value], light=cur.fhA-baseline.fhA, lightL=cur.fhL-baseline.fhL, lightB=(cur.fhB||0)-(baseline.fhB||0);
@@ -292,6 +295,17 @@ function toneText(){
 }
 function retone(){tone=null;toneBuf=[];toneT=0;delete log.tone;render()}
 
+// ---------- 변화 지도: 얼굴 전체 랜드마크에서 룩 색 쪽 변화량 ----------
+let lastMap=null;
+function changeMap(cur,e){
+  if(!cur.all||!baseline.all) return null;
+  const bi=[...baseline.left.inner,...baseline.right.inner], skin=[0,1,2].map(k=>bi.reduce((t,q)=>t+q[k],0)/bi.length);
+  const [ea,eb]=mixDir(skin,LOOKS[$('look').value].hex,8);
+  lastMap=cur.all.map((q,i)=>((q[1]-baseline.all[i][1])-e.light)*ea+((q[2]-baseline.all[i][2])-(e.lightB||0))*eb);
+  // 로그: 변화가 큰 랜드마크 번호:값 (상위 30)
+  return lastMap.map((v,i)=>[i,v]).filter(([,v])=>v>=3).sort((a,b)=>b[1]-a[1]).slice(0,30).map(([i,v])=>i+':'+Math.round(v)).join(',');
+}
+
 // ---------- 그리기 ----------
 // 화면 떨림 줄이기: 윤곽 점을 이전 프레임과 섞음
 const ema={}; function steady(key,pts,k=.65){const o=ema[key];if(!o||o.length!==pts.length){ema[key]=pts.map(p=>({...p}));return ema[key]}for(let i=0;i<pts.length;i++){o[i].x+=(pts[i].x-o[i].x)*k;o[i].y+=(pts[i].y-o[i].y)*k}return o}
@@ -347,6 +361,10 @@ function draw(t){
       ctx.strokeStyle='#fff';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
       const ang=Math.atan2(b.y-a.y,b.x-a.x);ctx.fillStyle='#fff';ctx.beginPath();ctx.moveTo(b.x,b.y);ctx.lineTo(b.x-14*Math.cos(ang-.5),b.y-14*Math.sin(ang-.5));ctx.lineTo(b.x-14*Math.cos(ang+.5),b.y-14*Math.sin(ang+.5));ctx.closePath();ctx.fill();
     }
+    if($('showMap').checked&&lastMap){ // 변화 지도: 노랑(약)→빨강(강)
+      lastMap.forEach((v,i)=>{ if(v<2) return; const p=P(i);
+        ctx.fillStyle=v>=7?'rgba(230,30,30,.95)':v>=4?'rgba(255,140,0,.9)':'rgba(255,225,0,.85)';
+        ctx.beginPath(); ctx.arc(p.x,p.y,v>=4?4.5:3.5,0,7); ctx.fill(); }); }
     if($('showPts').checked&&live){
       for(const [s,res] of [[z.left,live.L],[z.right,live.R]]){
         s.inner.forEach((p,i)=>{ctx.fillStyle=res.covered[i]?'#3ddc84':'rgba(255,255,255,.8)';ctx.beginPath();ctx.arc(p.x,p.y,3,0,7);ctx.fill()});
@@ -428,7 +446,7 @@ function resultHtml(e){
 let baseBuf=[], baseNo=0;
 function captureBaseline(){
   baseBuf=[]; $('btnBase').disabled=true; $('btnBase').textContent='저장 중…';
-  const take=()=>{const m=measure(); if(m) baseBuf.push(m); if(baseBuf.length<6) setTimeout(take,120); else {
+  const take=()=>{const m=measure(true); if(m) baseBuf.push(m); if(baseBuf.length<6) setTimeout(take,120); else {
     baseline=averageMeasures(baseBuf); baseNo++; step=1; fails=0; lastEval=null; stepStart=performance.now();
     log.strength=$('strength').value; log.look=$('look').value; log.lookHex=LOOKS[$('look').value].hex; log.baseFhL=Math.round(baseBuf[0].fhL); log.ver=VER;
     log.video=`${video.videoWidth}x${video.videoHeight}`; log.baseYaw=r2(baseline.yaw); log.baseFw=r2(baseline.fwRatio);
@@ -440,7 +458,7 @@ const r1=v=>Math.round(v*10)/10, r2=v=>Math.round(v*100)/100;
 const sideLog=x=>({medDl:Math.round(x.medDl),colDiff:x.colDiff==null?null:Math.round(x.colDiff),shift:x.shift.map(r1),cov:r2(x.cov),int:r1(x.inten),out:r2(x.out),avgD:r1(x.avgD),dL:r1(x.dL),d:x.d.map(v=>Math.round(v)).join(","),od:x.od.map(v=>Math.round(v)).join(","),dl:x.dl.map(v=>Math.round(v)).join(",")});
 function judge(){
   const list=[]; let n=0;
-  const take=()=>{const m=measure(); if(m) list.push(m); if(++n<4) setTimeout(take,100); else {
+  const take=()=>{const m=measure(true); if(m) list.push(m); if(++n<4) setTimeout(take,100); else {
     if(list.length<2){ $('res').innerHTML='<div class="msg warn">얼굴이 잘 안 보여요. 손을 내리고 정면을 본 뒤 다시 눌러 주세요.</div>'; say('얼굴이 잘 안 보여요. 정면을 봐 주세요.'); return; }
     const avg=averageMeasures(list);
     const lightOff=Math.abs(avg.fhL-baseline.fhL)>LIGHT_HOLD.L||Math.hypot(avg.fhA-baseline.fhA,(avg.fhB||0)-(baseline.fhB||0))>LIGHT_HOLD.ab;
@@ -448,6 +466,7 @@ function judge(){
     if(Math.abs(avg.yaw-baseline.yaw)>YAW_TOL){ // 판정 보류: 고개가 돌아가면 한쪽 볼 조명·각도가 달라짐
       log.holds=(log.holds||0)+1; $('res').innerHTML='<div class="msg warn">고개가 살짝 돌아가 있어요. 정면을 보고 다시 눌러 주세요. (판정 보류, 미흡 횟수에 안 들어가요)</div>'; say('정면을 보고 다시 눌러 주세요.'); return; }
     const e=evaluate(avg);
+    const hot=changeMap(avg,e); // 얼굴 전체에서 룩 색 쪽으로 바뀐 곳 (보류여도 계산)
     const glare=[['왼쪽 볼',e.L],['오른쪽 볼',e.R]].filter(([,x])=>Math.abs(x.medDl)>SIDE_GLARE);
     if(glare.length){ // 판정 보류: 한쪽 볼만 빛 반사·측면 조명으로 밝기가 크게 바뀜
       (log.glareHolds=log.glareHolds||[]).push(glare.map(([n,x])=>n+':'+Math.round(x.medDl)).join(','));
@@ -455,7 +474,7 @@ function judge(){
       $('res').innerHTML=`<div class="msg warn">${n}에 빛이 반사되거나 조명이 비스듬히 들어와 색을 정확히 볼 수 없어요. 기준 저장 때와 같은 거리·자세로, 조명이 얼굴 정면에 오게 하고 다시 눌러 주세요. (판정 보류)</div>`;
       say('빛 때문에 색을 정확히 볼 수 없어요. 기준 저장 때와 같은 자세로 다시 눌러 주세요.'); return; }
     lastEval=e;
-    log.attempts.push({base:baseNo, t:Math.round((performance.now()-stepStart)/1000), pass:e.pass,
+    log.attempts.push({hot, base:baseNo, t:Math.round((performance.now()-stepStart)/1000), pass:e.pass,
       L:sideLog(e.L), R:sideLog(e.R), yaw:r2(avg.yaw), fw:r2(avg.fwRatio), fhL:Math.round(avg.fhL),
       symCov:r2(e.symCov), light:r1(e.light), lightL:r1(e.lightL), issues:e.issues.map(i=>i.k+':'+i.side)});
     if(e.pass){ say('잘 발렸어요. 다음으로 넘어갈까요?'); finishPrompt(); }
@@ -524,7 +543,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v17 · 11-22';
+const VER='v18 · 11-22';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
