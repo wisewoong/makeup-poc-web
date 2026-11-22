@@ -62,10 +62,13 @@ textarea{width:100%;height:120px;font:12px/1.4 ui-monospace,Menlo,monospace;bord
     <label class="t">판정 강도
       <select id="strength"><option value="loose">느슨</option><option value="normal" selected>보통</option><option value="strict">엄격</option></select>
     </label>
+    <label class="t">블러셔 색(룩)
+      <select id="look"><option value="coral">코랄</option><option value="pink" selected>핑크</option><option value="rose">로즈</option><option value="peach">피치</option></select>
+    </label>
     <label class="t"><input type="checkbox" id="tts" checked> 음성 안내</label>
   </div>
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
-  <p class="small" id="loadMsg">v11 · 11-22</p>
+  <p class="small" id="loadMsg">v12 · 11-22</p>
 </div>
 
 <div id="panel" hidden>
@@ -73,6 +76,7 @@ textarea{width:100%;height:120px;font:12px/1.4 ui-monospace,Menlo,monospace;bord
   <div id="view"></div>
   <div class="row" style="margin-top:6px">
     <label class="t"><input type="checkbox" id="showPts"> 판정 지점 보기</label>
+    <label class="t"><input type="checkbox" id="fillZone"> 영역 색 채우기</label>
   </div>
 </div>
 
@@ -85,10 +89,24 @@ const CHEEK_B=[266,280,330,345,346,347,348,352,376,411,425,426,427];   // 반대
 const FOREHEAD=[10,151,9,109,338,108,337,67,297];                        // 조명 변화 보정용 기준 영역
 const TEMPLES=[127,356], NOSE=1, FACE_L=234, FACE_R=454;
 const TH={ // 판정 강도별 기준값 (관리자 설정값을 흉내 냄)
-  loose: {cov:2.5, lDrop:2.5, covMin:.55, symTol:.35, outMax:.30, intMax:18},
-  normal:{cov:3.5, lDrop:3.0, covMin:.70, symTol:.25, outMax:.20, intMax:15},
-  strict:{cov:5.0, lDrop:4.0, covMin:.80, symTol:.15, outMax:.12, intMax:12},
+  loose: {cov:2.5, lDrop:2.5, colTol:40, covMin:.55, symTol:.35, outMax:.30, intMax:18},
+  normal:{cov:3.5, lDrop:3.0, colTol:30, covMin:.70, symTol:.25, outMax:.20, intMax:15},
+  strict:{cov:5.0, lDrop:4.0, colTol:20, covMin:.80, symTol:.15, outMax:.12, intMax:12},
 };
+// 룩 블러셔 색 (관리자 룩 프로파일의 blush.color를 흉내 냄)
+const LOOKS={coral:{name:'코랄',hex:'#F4A08C'},pink:{name:'핑크',hex:'#F2A7B8'},rose:{name:'로즈',hex:'#D98A96'},peach:{name:'피치',hex:'#F7B59B'}};
+function lab2rgb(L,a,b){
+  let y=(L+16)/116,x=a/500+y,z=y-b/200; const f=t=>t**3>.008856?t**3:(t-16/116)/7.787;
+  x=f(x)*.95047;y=f(y);z=f(z)*1.08883;
+  let R=x*3.2406+y*-1.5372+z*-.4986, G=x*-.9689+y*1.8758+z*.0415, B=x*.0557+y*-.2040+z*1.0570;
+  const g=c=>255*Math.min(1,Math.max(0,c>.0031308?1.055*c**(1/2.4)-.055:12.92*c)); return [g(R),g(G),g(B)];
+}
+// 피부색에 룩 색을 조금씩 섞을 때 a*b* 변화 방향 (변화량 mag에 해당하는 만큼 섞은 지점 기준 — 섞을수록 방향이 휘기 때문)
+function mixDir(skin,tgtHex,mag){
+  const s=lab2rgb(...skin), t=[1,3,5].map(i=>parseInt(tgtHex.slice(i,i+2),16)); let last=[1,0];
+  for(let al=.02;al<=1;al+=.02){const m=rgb2lab(...s.map((v,k)=>v*(1-al)+t[k]*al)); const da=m[1]-skin[1],db=m[2]-skin[2],n=Math.hypot(da,db); if(n>1e-6) last=[da/n,db/n]; if(n>=mag) break;}
+  return last;
+}
 const INNER_T=[.3,.55,.8,.95], OUTER_T=1.6;
 const OUT_REL=.7;   // 영역 이탈: 바깥 지점이 안쪽 평균 진하기의 70% 이상일 때만 이탈로 봄 (경계 블렌딩은 허용)
 const YAW_TOL=.08;  // 판정 보류: 기준 저장 때보다 고개가 이만큼 더 돌아가면 (v7: .1 차이에 볼 일부 왜곡, v8: .06은 보류 15회로 과다)
@@ -173,25 +191,32 @@ function measure(){
   const img=octx.getImageData(0,0,sw,sh); img.ox=sx; img.oy=sy;
   const z=zones(), fw=Math.abs(P(FACE_R).x-P(FACE_L).x), r=Math.max(2,fw*.012);
   const m=pts=>pts.map(p=>sampleLab(img,p,r));
-  const fh=m(z.fh); const fhA=fh.reduce((s,q)=>s+q[1],0)/fh.length, fhL=fh.reduce((s,q)=>s+q[0],0)/fh.length;
+  const fh=m(z.fh); const fhA=fh.reduce((s,q)=>s+q[1],0)/fh.length, fhL=fh.reduce((s,q)=>s+q[0],0)/fh.length, fhB=fh.reduce((s,q)=>s+q[2],0)/fh.length;
   const nose=P(NOSE), yaw=(nose.x-(P(FACE_L).x+P(FACE_R).x)/2)/(fw/2); // 0=정면, ±=좌우로 돌림
-  return {fw, fwRatio:fw/cv.width, fhA, fhL, yaw,
+  return {fw, fwRatio:fw/cv.width, fhA, fhL, fhB, yaw,
     left:{inner:m(z.left.inner), outer:m(z.left.outer)}, right:{inner:m(z.right.inner), outer:m(z.right.outer)}};
 }
 function averageMeasures(list){
   const avg=arrs=>arrs[0].map((_,i)=>[0,1,2].map(k=>arrs.reduce((s,a)=>s+a[i][k],0)/arrs.length));
   const mean=k=>list.reduce((s,m)=>s+m[k],0)/list.length;
-  return {fhA:mean('fhA'), fhL:mean('fhL'), yaw:mean('yaw'), fwRatio:mean('fwRatio'),
+  return {fhA:mean('fhA'), fhL:mean('fhL'), fhB:mean('fhB'), yaw:mean('yaw'), fwRatio:mean('fwRatio'),
     left:{inner:avg(list.map(m=>m.left.inner)),outer:avg(list.map(m=>m.left.outer))},
     right:{inner:avg(list.map(m=>m.right.inner)),outer:avg(list.map(m=>m.right.outer))}};
 }
 function evaluate(cur){
-  const th=TH[$('strength').value], light=cur.fhA-baseline.fhA, lightL=cur.fhL-baseline.fhL;
+  const th=TH[$('strength').value], light=cur.fhA-baseline.fhA, lightL=cur.fhL-baseline.fhL, lightB=(cur.fhB||0)-(baseline.fhB||0);
+  const look=LOOKS[$('look').value];
   const side=s=>{
-    const d=cur[s].inner.map((q,i)=>(q[1]-baseline[s].inner[i][1])-light);
-    const od=cur[s].outer.map((q,i)=>(q[1]-baseline[s].outer[i][1])-light);
-    const dl=cur[s].inner.map((q,i)=>(q[0]-baseline[s].inner[i][0])-lightL); // 지점별 밝기 변화 (조명 보정)
-    // 발림: 붉은 기가 기준 이상 오르거나, 붉은 기가 조금 오르면서 밝기가 확실히 떨어짐 (밝은 조명에서 색이 바래 보일 때)
+    const bi=baseline[s].inner, ci=cur[s].inner;
+    // 기대 색 방향: 이 볼의 원래 피부색 → 룩 색 (a*b* 평면)
+    const skin=[0,1,2].map(k=>bi.reduce((t,q)=>t+q[k],0)/bi.length);
+    let [ea,eb]=mixDir(skin,look.hex,8); // 덮임 판정용 방향 (보통 정도 발랐을 때)
+    const da=ci.map((q,i)=>(q[1]-bi[i][1])-light), db=ci.map((q,i)=>(q[2]-bi[i][2])-lightB);
+    // d = 룩 색 쪽으로 바뀐 양 (예전: 붉은 기 a*만 봄 → 색이 달라도 통과)
+    const d=da.map((v,i)=>v*ea+db[i]*eb);
+    const od=cur[s].outer.map((q,i)=>((q[1]-baseline[s].outer[i][1])-light)*ea+((q[2]-baseline[s].outer[i][2])-lightB)*eb);
+    const dl=ci.map((q,i)=>(q[0]-bi[i][0])-lightL); // 지점별 밝기 변화 (조명 보정)
+    // 발림: 룩 색 쪽 변화가 기준 이상이거나, 조금 바뀌면서 밝기가 확실히 떨어짐 (밝은 조명에서 색이 바래 보일 때)
     const covered=d.map((v,i)=>v>=th.cov||(v>=th.cov*.4&&dl[i]<=-th.lDrop));
     const cov=covered.filter(Boolean).length/d.length;
     const covVals=d.filter((v,i)=>covered[i]);
@@ -200,7 +225,11 @@ function evaluate(cur){
     const out=od.filter(v=>v>=outTh).length/od.length;
     const avgD=d.reduce((a,b)=>a+b,0)/d.length;
     const dL=dl.reduce((a,b)=>a+b,0)/dl.length;
-    return {cov,inten,out,covered,avgD,dL,d,od,dl};
+    // 색 일치: 발린 지점들의 실제 색 변화 방향 vs 기대 방향 (각도, +면 더 노랗게/주황, -면 더 푸르게/핑크)
+    let sa=0,sb=0,n=0; covered.forEach((c,i)=>{if(c){sa+=da[i];sb+=db[i];n++}});
+    let colDiff=null; const mag=n?Math.hypot(sa/n,sb/n):0;
+    if(n>=d.length*.2&&mag>=th.cov){ const [xa,xb]=mixDir(skin,look.hex,mag); let x=Math.atan2(sb,sa)-Math.atan2(xb,xa); x=Math.atan2(Math.sin(x),Math.cos(x)); colDiff=x*180/Math.PI; }
+    return {cov,inten,out,covered,avgD,dL,d,od,dl,colDiff,shift:n?[sa/n,sb/n]:[0,0]};
   };
   const L=side('left'), R=side('right');
   const symCov=Math.abs(L.cov-R.cov), symInt=Math.min(L.inten,R.inten)/Math.max(L.inten,R.inten,1e-6);
@@ -209,12 +238,13 @@ function evaluate(cur){
     if(s.cov<th.covMin) issues.push({k:'cov',side:n,t:`${n}에 덜 발린 부분이 있어요 (${Math.round(s.cov*100)}%)`});
     if(s.out>th.outMax) issues.push({k:'out',side:n,t:`${n} 블러셔가 영역 밖으로 나갔어요. 경계를 블렌딩하세요`});
     if(s.inten>th.intMax) issues.push({k:'int',side:n,t:`${n}이 너무 진해요. 깨끗한 퍼프로 두드려 덜어내세요`});
+    if(s.colDiff!=null&&Math.abs(s.colDiff)>th.colTol) issues.push({k:'col',side:n,t:`${n} 색이 ${look.name} 룩보다 ${s.colDiff>0?'주황빛(노란 기)':'핑크빛(푸른 기)'}이 강해요. ${look.name} 색에 가까운 제품으로 덧발라 주세요`});
   }
   if(L.cov>=th.covMin*.8&&R.cov>=th.covMin*.8&&(symCov>th.symTol||symInt<.6)){
     const weak=(L.cov+L.inten/20)<(R.cov+R.inten/20)?'왼쪽 볼':'오른쪽 볼';
     issues.push({k:'sym',side:weak,t:`좌우가 달라요. ${weak}을 조금 더 발라주세요`});
   }
-  return {L,R,symCov,symInt,issues,pass:issues.length===0,light,lightL,yawDiff:(cur.yaw||0)-(baseline.yaw||0)};
+  return {L,R,symCov,symInt,issues,pass:issues.length===0,light,lightL,lightB,look:look.name,yawDiff:(cur.yaw||0)-(baseline.yaw||0)};
 }
 
 // ---------- 그리기 ----------
@@ -229,15 +259,18 @@ function ellipseOf(h){
   return {x:c.x,y:c.y,a:Math.sqrt(2*l1),b:Math.sqrt(2*l2),rot:.5*Math.atan2(2*xy,xx-yy)};
 }
 function softZone(s,alpha,warn){
-  const raw=ellipseOf(s.h), [e]=steady(s.name,[raw]); e.rot=raw.rot; e.a+=(raw.a-e.a)*.45; e.b+=(raw.b-e.b)*.45;
-  const col=warn?'217,58,58':'236,96,130';
-  ctx.save(); ctx.translate(e.x,e.y); ctx.rotate(e.rot); ctx.scale(1,e.b/e.a);
-  const g=ctx.createRadialGradient(0,0,0,0,0,e.a);
-  g.addColorStop(0,`rgba(${col},${Math.min(.75,alpha*1.7)})`); g.addColorStop(.6,`rgba(${col},${alpha})`); g.addColorStop(1,`rgba(${col},0)`);
-  ctx.beginPath(); ctx.arc(0,0,e.a,0,Math.PI*2); ctx.fillStyle=g; ctx.fill();
-  ctx.restore();
-  ctx.beginPath(); ctx.ellipse(e.x,e.y,e.a,e.b,e.rot,0,Math.PI*2);
-  ctx.strokeStyle=warn?'rgba(255,120,120,.9)':'rgba(255,255,255,.5)'; ctx.lineWidth=1.5; ctx.stroke();
+  const raw=ellipseOf(s.h), [e]=steady(s.name,[raw]); e.rot=raw.rot; e.a+=(raw.a-e.a)*.65; e.b+=(raw.b-e.b)*.65;
+  if($('fillZone').checked){ // 선택: 영역 색 채우기 (실제 발린 색이 가려짐)
+    const col=warn?'217,58,58':'236,96,130';
+    ctx.save(); ctx.translate(e.x,e.y); ctx.rotate(e.rot); ctx.scale(1,e.b/e.a);
+    const g=ctx.createRadialGradient(0,0,0,0,0,e.a);
+    g.addColorStop(0,`rgba(${col},${Math.min(.75,alpha*1.7)})`); g.addColorStop(.6,`rgba(${col},${alpha})`); g.addColorStop(1,`rgba(${col},0)`);
+    ctx.beginPath(); ctx.arc(0,0,e.a,0,Math.PI*2); ctx.fillStyle=g; ctx.fill(); ctx.restore();
+  }
+  // 기본: 윤곽선만 (그림자로 어떤 피부색에서도 보이게)
+  ctx.save(); ctx.beginPath(); ctx.ellipse(e.x,e.y,e.a,e.b,e.rot,0,Math.PI*2);
+  ctx.shadowColor='rgba(0,0,0,.6)'; ctx.shadowBlur=4; ctx.setLineDash(warn?[]:[10,7]);
+  ctx.strokeStyle=warn?'rgba(255,80,80,.95)':'rgba(255,255,255,.9)'; ctx.lineWidth=warn?3.5:2.2; ctx.stroke(); ctx.restore();
 }
 function draw(t){
   ctx.clearRect(0,0,cv.width,cv.height);
@@ -253,7 +286,7 @@ function draw(t){
     const bad=new Set((lastEval&&!lastEval.pass)?lastEval.issues.map(i=>i.side):[]);
     for(const s of [z.left,z.right]){
       const blink=bad.has(s.name)&&Math.floor(t/350)%2===0;
-      softZone(s,blink?.4:pulse*1.2,blink);
+      softZone(s,blink?.4:pulse*1.2,bad.has(s.name)&&Math.floor(t/350)%2===0);
       // 바르는 방향: 볼 중심 → 관자놀이 쪽
       const k=((t/1200)%1), a={x:s.c.x+(s.temple.x-s.c.x)*.15,y:s.c.y+(s.temple.y-s.c.y)*.15}, b={x:s.c.x+(s.temple.x-s.c.x)*(.35+.3*k),y:s.c.y+(s.temple.y-s.c.y)*(.35+.3*k)};
       ctx.strokeStyle='#fff';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
@@ -282,8 +315,8 @@ function render(){
     $('btnBase').onclick=captureBaseline;
   } else if(step===1){
     const mk=(id,label,mark)=>`<span>${label}</span><div class="bar"><i id="${id}b"></i><s style="left:${mark*100}%"></s></div><span class="num" id="${id}n">–</span>`;
-    view.innerHTML=`<h2>2. 블러셔</h2><p>분홍 영역 안에 화살표 방향(관자놀이 쪽)으로 펴 발라 주세요. 다 바르면 손을 내리고 <b>다 발랐어요</b>를 누르세요.</p>
-      <div class="meters">${mk('mL','왼쪽 볼',th.covMin)}${mk('mR','오른쪽 볼',th.covMin)}${mk('mS','좌우 차이',th.symTol)}${mk('mO','영역 이탈',th.outMax)}</div>
+    view.innerHTML=`<h2>2. 블러셔 <span style="display:inline-block;width:14px;height:14px;border-radius:50%;vertical-align:-1px;background:${LOOKS[$('look').value].hex}"></span> <span class="small">${LOOKS[$('look').value].name} 룩</span></h2><p>점선 영역 안에 화살표 방향(관자놀이 쪽)으로 펴 발라 주세요. 다 바르면 손을 내리고 <b>다 발랐어요</b>를 누르세요.</p>
+      <div class="meters">${mk('mL','왼쪽 볼',th.covMin)}${mk('mR','오른쪽 볼',th.covMin)}${mk('mS','좌우 차이',th.symTol)}${mk('mO','영역 이탈',th.outMax)}${mk('mC','색 일치',1-th.colTol/90)}</div>
       <div class="small" id="st"></div>
       <div id="res">${lastEval?resultHtml(lastEval):''}</div>
       <div class="row" id="nextRow" ${lastEval&&lastEval.pass?'':'hidden'}><button class="go" id="btnNext">다음으로</button></div>
@@ -321,14 +354,14 @@ function captureBaseline(){
   baseBuf=[]; $('btnBase').disabled=true; $('btnBase').textContent='저장 중…';
   const take=()=>{const m=measure(); if(m) baseBuf.push(m); if(baseBuf.length<6) setTimeout(take,120); else {
     baseline=averageMeasures(baseBuf); baseNo++; step=1; fails=0; lastEval=null; stepStart=performance.now();
-    log.strength=$('strength').value; log.baseFhL=Math.round(baseBuf[0].fhL); log.ver=VER;
+    log.strength=$('strength').value; log.look=$('look').value; log.lookHex=LOOKS[$('look').value].hex; log.baseFhL=Math.round(baseBuf[0].fhL); log.ver=VER;
     log.video=`${video.videoWidth}x${video.videoHeight}`; log.baseYaw=r2(baseline.yaw); log.baseFw=r2(baseline.fwRatio);
-    say('블러셔 단계입니다. 분홍 영역 안에 화살표 방향으로 펴 발라 주세요.'); render();}};
+    say('블러셔 단계입니다. 점선 영역 안에 화살표 방향으로 펴 발라 주세요.'); render();}};
   take();
 }
 const r1=v=>Math.round(v*10)/10, r2=v=>Math.round(v*100)/100;
 // 로그용 상세값: 판정 지점별 붉은 기 증가량(d), 밝기 변화(dL), 얼굴 방향(yaw)
-const sideLog=x=>({cov:r2(x.cov),int:r1(x.inten),out:r2(x.out),avgD:r1(x.avgD),dL:r1(x.dL),d:x.d.map(v=>Math.round(v)).join(","),od:x.od.map(v=>Math.round(v)).join(","),dl:x.dl.map(v=>Math.round(v)).join(",")});
+const sideLog=x=>({colDiff:x.colDiff==null?null:Math.round(x.colDiff),shift:x.shift.map(r1),cov:r2(x.cov),int:r1(x.inten),out:r2(x.out),avgD:r1(x.avgD),dL:r1(x.dL),d:x.d.map(v=>Math.round(v)).join(","),od:x.od.map(v=>Math.round(v)).join(","),dl:x.dl.map(v=>Math.round(v)).join(",")});
 function judge(){
   const list=[]; let n=0;
   const take=()=>{const m=measure(); if(m) list.push(m); if(++n<4) setTimeout(take,100); else {
@@ -377,7 +410,8 @@ function updateMeters(){
   if(step!==1||!$('mLb')) return;
   const e=live, set=(id,v,txt)=>{$(id+'b').style.width=Math.max(0,Math.min(100,v*100))+'%';$(id+'n').textContent=txt};
   if(e){ set('mL',e.L.cov,Math.round(e.L.cov*100)+'%'); set('mR',e.R.cov,Math.round(e.R.cov*100)+'%');
-    set('mS',e.symCov,Math.round(e.symCov*100)+'%'); const o=Math.max(e.L.out,e.R.out); set('mO',o,Math.round(o*100)+'%'); }
+    set('mS',e.symCov,Math.round(e.symCov*100)+'%'); const o=Math.max(e.L.out,e.R.out); set('mO',o,Math.round(o*100)+'%');
+    const cd=[e.L.colDiff,e.R.colDiff].filter(v=>v!=null); if(cd.length){const w=Math.max(...cd.map(Math.abs)); set('mC',Math.max(0,1-w/90),Math.round(Math.max(0,1-w/90)*100)+'%')} else set('mC',0,'–'); }
   const sec=Math.round((performance.now()-stepStart)/1000);
   const turned=e&&Math.abs(e.yawDiff)>YAW_TOL;
   $('st').innerHTML=(turned?'<b style="color:#b3261e">고개가 돌아갔어요 · 기준 저장 때처럼 정면을 봐 주세요</b><br>':'')+`세로선 = 기준값 · 판정 강도 ${$('strength').selectedOptions[0].text} · 미흡 ${fails}회 · ${sec}초`;
@@ -401,7 +435,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v11 · 11-22';
+const VER='v12 · 11-22';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
