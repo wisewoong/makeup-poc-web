@@ -68,7 +68,7 @@ textarea{width:100%;height:120px;font:12px/1.4 ui-monospace,Menlo,monospace;bord
     <label class="t"><input type="checkbox" id="tts" checked> 음성 안내</label>
   </div>
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
-  <p class="small" id="loadMsg">v19 · 11-22</p>
+  <p class="small" id="loadMsg">v20 · 11-22</p>
 </div>
 
 <div id="panel" hidden>
@@ -176,7 +176,7 @@ function zone(idx,ux,uy,nose){
     for(const t of INNER_T) inner.push({x:c.x+d.x*r*t, y:c.y+d.y*r*t});
     outer.push({x:c.x+d.x*r0*OUTER_T, y:c.y+d.y*r0*OUTER_T}); // 이탈 판정은 원래 영역 기준 (다듬은 쪽 블렌딩 경계 허용 — v14 실측 이탈 오판정)
   }
-  return {h,c,inner,outer,edge};
+  return {h,c,inner,outer,edge,ux,uy,sign,meanR};
 }
 function zones(){
   const fl=P(FACE_L), fr=P(FACE_R), len=Math.hypot(fr.x-fl.x,fr.y-fl.y)||1;
@@ -304,6 +304,30 @@ function changeMap(cur,e){
   lastMap=cur.all.map((q,i)=>((q[1]-baseline.all[i][1])-e.light)*ea+((q[2]-baseline.all[i][2])-(e.lightB||0))*eb);
   // 로그: 변화가 큰 랜드마크 번호:값 (상위 30)
   return lastMap.map((v,i)=>[i,v]).filter(([,v])=>v>=3).sort((a,b)=>b[1]-a[1]).slice(0,30).map(([i,v])=>i+':'+Math.round(v)).join(',');
+}
+
+// ---------- 점선 밖 도포 방향 안내 (변화 지도 사용) ----------
+function inPoly(p,poly){let c=false;for(let i=0,j=poly.length-1;i<poly.length;j=i++){const a=poly[i],b=poly[j];if(((a.y>p.y)!==(b.y>p.y))&&(p.x<(b.x-a.x)*(p.y-a.y)/(b.y-a.y)+a.x))c=!c}return c}
+function placeHints(e){
+  if(!lastMap) return;
+  const th=TH[$('strength').value], z=zones(), mouth=P(13);
+  const eyes=[[33,133],[362,263]].map(([a,b])=>({x:(P(a).x+P(b).x)/2,y:(P(a).y+P(b).y)/2}));
+  const hints=[];
+  for(const [n,s,res] of [['왼쪽 볼',z.left,e.L],['오른쪽 볼',z.right,e.R]]){
+    if(res.cov>=th.covMin) continue;
+    let wo=0,ox=0,oy=0;
+    lastMap.forEach((v,i)=>{ if(v<3) return; const p=P(i), dc=Math.hypot(p.x-s.c.x,p.y-s.c.y);
+      if(dc>2.4*s.meanR||inPoly(p,s.edge)) return;                       // 볼 주변이면서 점선 밖
+      if(Math.hypot(p.x-mouth.x,p.y-mouth.y)<dc) return;                    // 입 쪽 변화(입술 움직임) 제외
+      if(eyes.some(q=>Math.hypot(p.x-q.x,p.y-q.y)<.6*s.meanR)) return;     // 눈 주변 제외
+      const w=v-2; wo+=w; ox+=(p.x-s.c.x)*w; oy+=(p.y-s.c.y)*w; });
+    const wi=res.d.reduce((t,v)=>t+Math.max(0,v-2),0)*(12/49); // 안쪽 변화량 (지점 수 보정)
+    if(wo<6||wo<wi*.8) continue;
+    const gx=ox/wo, gy=oy/wo, along=(gx*s.ux.x+gy*s.ux.y)*s.sign, down=gx*s.uy.x+gy*s.uy.y;
+    const dir=Math.abs(along)>=Math.abs(down)?(along>0?'귀 쪽(바깥)':'코 쪽(안쪽)'):(down>0?'아래쪽':'눈 쪽(위)');
+    hints.push({k:'pos',side:n,t:`${n} 블러셔가 점선보다 ${dir}에 발렸어요. 점선 안쪽으로 펴 발라 주세요`});
+  }
+  if(hints.length){ e.issues=[...hints,...e.issues]; e.pass=false; }
 }
 
 // ---------- 그리기 ----------
@@ -478,6 +502,7 @@ function judge(){
       const n=glare.map(([n])=>n).join('·');
       $('res').innerHTML=`<div class="msg warn">${n}에 빛이 반사되거나 조명이 비스듬히 들어와 색을 정확히 볼 수 없어요. 기준 저장 때와 같은 거리·자세로, 조명이 얼굴 정면에 오게 하고 다시 눌러 주세요. (판정 보류)</div>`;
       say('빛 때문에 색을 정확히 볼 수 없어요. 기준 저장 때와 같은 자세로 다시 눌러 주세요.'); return; }
+    placeHints(e); // 점선 밖에 발렸으면 어느 쪽인지 안내
     lastEval=e;
     log.attempts.push({hot, base:baseNo, t:Math.round((performance.now()-stepStart)/1000), pass:e.pass,
       L:sideLog(e.L), R:sideLog(e.R), yaw:r2(avg.yaw), fw:r2(avg.fwRatio), fhL:Math.round(avg.fhL),
@@ -549,7 +574,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v19 · 11-22';
+const VER='v20 · 11-22';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
