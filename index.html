@@ -68,7 +68,7 @@ textarea{width:100%;height:120px;font:12px/1.4 ui-monospace,Menlo,monospace;bord
     <label class="t"><input type="checkbox" id="tts" checked> 음성 안내</label>
   </div>
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
-  <p class="small" id="loadMsg">v20 · 11-22</p>
+  <p class="small" id="loadMsg">v21 · 11-22</p>
 </div>
 
 <div id="panel" hidden>
@@ -155,6 +155,11 @@ function hull(pts){ // 볼록 껍질 (monotone chain)
 const ZONE_TRIM={dir:60, amt:.35};
 const trimAt=th=>1-ZONE_TRIM.amt*Math.max(0,Math.cos(th-ZONE_TRIM.dir*Math.PI/180));
 const LIGHT_HOLD={L:12, ab:6}; // 이마 밝기·색이 기준 저장 때보다 이만큼 바뀌면 판정 보류 (가림·조명 변화)
+const BASE_N=12, JUDGE_N=12; // 기준 저장·판정 때 평균 내는 프레임 수 (v21: 6·4 → 12·12)
+const NOISE_K=2.5, COV_FLOOR=1.8; // '바름' 기준 = 잡음×2.5 + 1 (최소 1.8, 최대 판정 강도 기준값)
+// 목표 진하기: 미리보기 슬라이더(.15~.60) → '너무 진해요' 상한. 실기기: 적당히 ≈5, 진하게 7~11
+const intMaxFor=(alpha,strength)=>{const t=Math.min(1,Math.max(0,(alpha-.15)/.45)); return 7+10*t+({loose:3,normal:0,strict:-2}[strength]||0)};
+const levelName=a=>a<.24?'연하게':a<.40?'보통':'진하게';
 const N_DIR=12; // 판정 방향 수 (고정): 볼 중심에서 12방향 × INNER_T 4지점 + 바깥 12지점
 // 중심 c에서 방향 d로 쏜 반직선이 볼록 껍질 h와 만나는 거리
 function rayHit(h,c,d){
@@ -206,7 +211,7 @@ function measure(full){ // full: 얼굴 전체 랜드마크 468곳 색도 측정
   if(off.width<sw||off.height<sh){off.width=Math.max(off.width,sw);off.height=Math.max(off.height,sh)} // 크기를 매번 바꾸지 않음
   octx.drawImage(video,sx,sy,sw,sh,0,0,sw,sh);
   const img=octx.getImageData(0,0,sw,sh); img.ox=sx; img.oy=sy;
-  const z=zones(), fw=Math.abs(P(FACE_R).x-P(FACE_L).x), r=Math.max(2,fw*.012);
+  const z=zones(), fw=Math.abs(P(FACE_R).x-P(FACE_L).x), r=Math.max(3,fw*.018); // 지점별 측정 면적 (v21: .012→.018, 잡음 감소)
   const m=pts=>pts.map(p=>sampleLab(img,p,r));
   const fh=m(z.fh); const fhA=fh.reduce((s,q)=>s+q[1],0)/fh.length, fhL=fh.reduce((s,q)=>s+q[0],0)/fh.length, fhB=fh.reduce((s,q)=>s+q[2],0)/fh.length;
   const nose=P(NOSE), yaw=(nose.x-(P(FACE_L).x+P(FACE_R).x)/2)/(fw/2); // 0=정면, ±=좌우로 돌림
@@ -223,7 +228,7 @@ function averageMeasures(list){
     all: list.every(m=>m.all)?avg(list.map(m=>m.all)):null};
 }
 function evaluate(cur){
-  const th=TH[$('strength').value], light=cur.fhA-baseline.fhA, lightL=cur.fhL-baseline.fhL, lightB=(cur.fhB||0)-(baseline.fhB||0);
+  const th0=TH[$('strength').value], th={...th0, cov:baseline.covEff??th0.cov, intMax:baseline.intMax??th0.intMax}, light=cur.fhA-baseline.fhA, lightL=cur.fhL-baseline.fhL, lightB=(cur.fhB||0)-(baseline.fhB||0);
   const look=LOOKS[$('look').value];
   const side=s=>{
     const bi=baseline[s].inner, ci=cur[s].inner;
@@ -419,10 +424,11 @@ function render(){
       <p>${i===0&&T?'<span class="chip" style="background:#e0567a;color:#fff">추천 1순위</span> ':''}<span style="display:inline-block;width:16px;height:16px;border-radius:50%;vertical-align:-2px;background:${L.hex}"></span> <b>${L.name} 블러셔</b> · ${L.mood} <span class="small">(${i+1}/${LOOK_ORDER.length})</span></p>
       <p class="small">화면의 볼에 완성 모습을 미리 입혀 봤어요. 실제 색은 제품·조명에 따라 조금 달라요.</p>
       <label class="t" style="margin:6px 0">연하게 <input type="range" id="pvA" min="15" max="60" value="${Math.round(pvAlpha*100)}" style="flex:1"> 진하게</label>
+      <p class="small" id="pvLv">목표 진하기: <b>${levelName(pvAlpha)}</b> — 이 진하기에 맞춰 판정해요 (너무 진하면 덜어내라고 안내)</p>
       <div class="row"><button class="go" id="btnPick">이걸로 할게요</button><button class="pri" id="btnNextLook">다른 룩 추천</button></div>
       <div class="row"><button id="btnOrig">누르는 동안 원본 보기</button>${T?'<button id="btnRetone">톤 다시 측정</button>':''}</div>`;
     if($('btnRetone')) $('btnRetone').onclick=retone;
-    $('pvA').oninput=e=>{pvAlpha=e.target.value/100};
+    $('pvA').oninput=e=>{pvAlpha=e.target.value/100; $('pvLv').innerHTML=`목표 진하기: <b>${levelName(pvAlpha)}</b> — 이 진하기에 맞춰 판정해요 (너무 진하면 덜어내라고 안내)`};
     const o=$('btnOrig'); o.onpointerdown=()=>{pvOrig=true}; o.onpointerup=o.onpointerleave=o.onpointercancel=()=>{pvOrig=false};
     $('btnNextLook').onclick=()=>{const n=LOOK_ORDER[(i+1)%LOOK_ORDER.length]; $('look').value=n; log.preview.seen.push(n); say(`${LOOKS[n].name} 블러셔예요. ${LOOKS[n].mood}이에요.`); render();};
     $('btnPick').onclick=()=>{log.preview.chosen=k; log.preview.alpha=pvAlpha; log.preview.sec=Math.round((performance.now()-pvStart)/1000); step=0; say('좋아요. 화장 전 얼굴을 저장할게요. 정면을 보고 잠시 멈춰 주세요.'); render();};
@@ -435,7 +441,7 @@ function render(){
     $('btnBase').onclick=captureBaseline;
   } else if(step===1){
     const mk=(id,label,mark)=>`<span>${label}</span><div class="bar"><i id="${id}b"></i><s style="left:${mark*100}%"></s></div><span class="num" id="${id}n">–</span>`;
-    view.innerHTML=`<h2>3. 블러셔 <span style="display:inline-block;width:14px;height:14px;border-radius:50%;vertical-align:-1px;background:${LOOKS[$('look').value].hex}"></span> <span class="small">${LOOKS[$('look').value].name} 룩</span></h2><p>점선 영역 안에 화살표 방향(관자놀이 쪽)으로 펴 발라 주세요. 다 바르면 손을 내리고 <b>다 발랐어요</b>를 누르세요.</p>
+    view.innerHTML=`<h2>3. 블러셔 <span style="display:inline-block;width:14px;height:14px;border-radius:50%;vertical-align:-1px;background:${LOOKS[$('look').value].hex}"></span> <span class="small">${LOOKS[$('look').value].name} 룩 · ${levelName(pvAlpha)}</span></h2><p>점선 영역 안에 화살표 방향(관자놀이 쪽)으로 펴 발라 주세요. 다 바르면 손을 내리고 <b>다 발랐어요</b>를 누르세요.</p>
       <div class="meters">${mk('mL','왼쪽 볼',th.covMin)}${mk('mR','오른쪽 볼',th.covMin)}${mk('mS','좌우 차이',th.symTol)}${mk('mO','영역 이탈',th.outMax)}${mk('mC','색 일치',1-th.colTol/90)}</div>
       <div class="small" id="st"></div>
       <div id="res">${lastEval?resultHtml(lastEval):''}</div>
@@ -475,8 +481,19 @@ let baseBuf=[], baseNo=0;
 function captureBaseline(){
   baseBuf=[]; $('btnBase').disabled=true; $('btnBase').textContent='저장 중…';
   log.bareChecked=true;
-  const take=()=>{const m=measure(true); if(m) baseBuf.push(m); if(baseBuf.length<6) setTimeout(take,120); else {
-    baseline=averageMeasures(baseBuf); baseNo++; step=1; fails=0; lastEval=null; stepStart=performance.now();
+  const take=()=>{const m=measure(true); if(m) baseBuf.push(m); if(baseBuf.length<BASE_N) setTimeout(take,80); else {
+    baseline=averageMeasures(baseBuf); baseNo++;
+    { // 맨 볼 잡음: 앞 6프레임 평균 vs 뒤 6프레임 평균의 차이 (룩 색 방향) → 판정 때 잡음으로 환산
+      const h=BASE_N>>1, A=averageMeasures(baseBuf.slice(0,h)), B=averageMeasures(baseBuf.slice(h));
+      const bi=[...baseline.left.inner,...baseline.right.inner], skin=[0,1,2].map(k=>bi.reduce((t,q)=>t+q[k],0)/bi.length);
+      const [ea,eb]=mixDir(skin,LOOKS[$('look').value].hex,8);
+      const diffs=['left','right'].flatMap(sd=>A[sd].inner.map((q,i)=>(q[1]-B[sd].inner[i][1])*ea+(q[2]-B[sd].inner[i][2])*eb));
+      const rms=Math.sqrt(diffs.reduce((t,v)=>t+v*v,0)/diffs.length), noise=rms*Math.SQRT1_2; // 12프레임 평균끼리 비교할 때의 잡음
+      const th=TH[$('strength').value];
+      baseline.noise=noise; baseline.covEff=Math.min(th.cov,Math.max(COV_FLOOR,NOISE_K*noise+1));
+      baseline.intMax=intMaxFor(pvAlpha,$('strength').value);
+      log.noise=+noise.toFixed(2); log.covEff=+baseline.covEff.toFixed(2); log.intMax=+baseline.intMax.toFixed(1); log.target=levelName(pvAlpha);
+    } step=1; fails=0; lastEval=null; stepStart=performance.now();
     log.strength=$('strength').value; log.look=$('look').value; log.lookHex=LOOKS[$('look').value].hex; log.baseFhL=Math.round(baseBuf[0].fhL); log.ver=VER;
     log.video=`${video.videoWidth}x${video.videoHeight}`; log.baseYaw=r2(baseline.yaw); log.baseFw=r2(baseline.fwRatio);
     say('블러셔 단계입니다. 점선 영역 안에 화살표 방향으로 펴 발라 주세요.'); render();}};
@@ -487,7 +504,7 @@ const r1=v=>Math.round(v*10)/10, r2=v=>Math.round(v*100)/100;
 const sideLog=x=>({medDl:Math.round(x.medDl),colDiff:x.colDiff==null?null:Math.round(x.colDiff),shift:x.shift.map(r1),cov:r2(x.cov),int:r1(x.inten),out:r2(x.out),avgD:r1(x.avgD),dL:r1(x.dL),d:x.d.map(v=>Math.round(v)).join(","),od:x.od.map(v=>Math.round(v)).join(","),dl:x.dl.map(v=>Math.round(v)).join(",")});
 function judge(){
   const list=[]; let n=0;
-  const take=()=>{const m=measure(true); if(m) list.push(m); if(++n<4) setTimeout(take,100); else {
+  const take=()=>{const m=measure(true); if(m) list.push(m); if(++n<JUDGE_N) setTimeout(take,70); else {
     if(list.length<2){ $('res').innerHTML='<div class="msg warn">얼굴이 잘 안 보여요. 손을 내리고 정면을 본 뒤 다시 눌러 주세요.</div>'; say('얼굴이 잘 안 보여요. 정면을 봐 주세요.'); return; }
     const avg=averageMeasures(list);
     const lightOff=Math.abs(avg.fhL-baseline.fhL)>LIGHT_HOLD.L||Math.hypot(avg.fhA-baseline.fhA,(avg.fhB||0)-(baseline.fhB||0))>LIGHT_HOLD.ab;
@@ -574,7 +591,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v20 · 11-22';
+const VER='v21 · 11-22';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
