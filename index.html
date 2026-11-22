@@ -65,7 +65,7 @@ textarea{width:100%;height:120px;font:12px/1.4 ui-monospace,Menlo,monospace;bord
     <label class="t"><input type="checkbox" id="tts" checked> 음성 안내</label>
   </div>
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
-  <p class="small" id="loadMsg">v6 · 11-22</p>
+  <p class="small" id="loadMsg">v7 · 11-22</p>
 </div>
 
 <div id="panel" hidden>
@@ -191,13 +191,34 @@ function evaluate(cur){
 }
 
 // ---------- 그리기 ----------
+// 화면 떨림 줄이기: 윤곽 점을 이전 프레임과 섞음
+const ema={}; function steady(key,pts,k=.45){const o=ema[key];if(!o||o.length!==pts.length){ema[key]=pts.map(p=>({...p}));return ema[key]}for(let i=0;i<pts.length;i++){o[i].x+=(pts[i].x-o[i].x)*k;o[i].y+=(pts[i].y-o[i].y)*k}return o}
+// 볼 영역 윤곽을 같은 크기·기울기의 타원으로 (경계를 촘촘히 샘플링해 공분산으로 맞춤)
+function ellipseOf(h){
+  const pts=[]; for(let i=0;i<h.length;i++){const p=h[i],q=h[(i+1)%h.length];for(let k=0;k<8;k++)pts.push({x:p.x+(q.x-p.x)*k/8,y:p.y+(q.y-p.y)*k/8})}
+  const c=centroid(pts); let xx=0,yy=0,xy=0; for(const p of pts){const dx=p.x-c.x,dy=p.y-c.y;xx+=dx*dx;yy+=dy*dy;xy+=dx*dy}
+  xx/=pts.length;yy/=pts.length;xy/=pts.length;
+  const tr=(xx+yy)/2, det=Math.sqrt(((xx-yy)/2)**2+xy*xy), l1=tr+det, l2=Math.max(tr-det,1e-6);
+  return {x:c.x,y:c.y,a:Math.sqrt(2*l1),b:Math.sqrt(2*l2),rot:.5*Math.atan2(2*xy,xx-yy)};
+}
+function softZone(s,alpha,warn){
+  const raw=ellipseOf(s.h), [e]=steady(s.name,[raw]); e.rot=raw.rot; e.a+=(raw.a-e.a)*.45; e.b+=(raw.b-e.b)*.45;
+  const col=warn?'217,58,58':'236,96,130';
+  ctx.save(); ctx.translate(e.x,e.y); ctx.rotate(e.rot); ctx.scale(1,e.b/e.a);
+  const g=ctx.createRadialGradient(0,0,0,0,0,e.a);
+  g.addColorStop(0,`rgba(${col},${Math.min(.75,alpha*1.7)})`); g.addColorStop(.6,`rgba(${col},${alpha})`); g.addColorStop(1,`rgba(${col},0)`);
+  ctx.beginPath(); ctx.arc(0,0,e.a,0,Math.PI*2); ctx.fillStyle=g; ctx.fill();
+  ctx.restore();
+  ctx.beginPath(); ctx.ellipse(e.x,e.y,e.a,e.b,e.rot,0,Math.PI*2);
+  ctx.strokeStyle=warn?'rgba(255,120,120,.9)':'rgba(255,255,255,.5)'; ctx.lineWidth=1.5; ctx.stroke();
+}
 function draw(t){
   ctx.clearRect(0,0,cv.width,cv.height);
   if(!lm){return}
   const z=zones();
   if(step===0){ // 얼굴 위치 안내용 윤곽
-    ctx.strokeStyle='rgba(255,255,255,.7)';ctx.lineWidth=3;
-    for(const s of [z.left,z.right]){ctx.beginPath();s.h.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.closePath();ctx.stroke()}
+    ctx.strokeStyle='rgba(255,255,255,.7)';ctx.lineWidth=2;
+    for(const s of [z.left,z.right]){const e=ellipseOf(s.h);ctx.beginPath();ctx.ellipse(e.x,e.y,e.a,e.b,e.rot,0,Math.PI*2);ctx.stroke()}
     return;
   }
   if(step===1){
@@ -205,9 +226,7 @@ function draw(t){
     const bad=new Set((lastEval&&!lastEval.pass)?lastEval.issues.map(i=>i.side):[]);
     for(const s of [z.left,z.right]){
       const blink=bad.has(s.name)&&Math.floor(t/350)%2===0;
-      ctx.fillStyle=blink?'rgba(217,58,58,.45)':`rgba(224,86,122,${pulse})`;
-      ctx.strokeStyle=blink?'#ff6b6b':'rgba(255,255,255,.9)';ctx.lineWidth=2.5;ctx.setLineDash([8,6]);
-      ctx.beginPath();s.h.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.closePath();ctx.fill();ctx.stroke();ctx.setLineDash([]);
+      softZone(s,blink?.4:pulse*1.2,blink);
       // 바르는 방향: 볼 중심 → 관자놀이 쪽
       const k=((t/1200)%1), a={x:s.c.x+(s.temple.x-s.c.x)*.15,y:s.c.y+(s.temple.y-s.c.y)*.15}, b={x:s.c.x+(s.temple.x-s.c.x)*(.35+.3*k),y:s.c.y+(s.temple.y-s.c.y)*(.35+.3*k)};
       ctx.strokeStyle='#fff';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
@@ -345,7 +364,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v6 · 11-22';
+const VER='v7 · 11-22';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
