@@ -65,7 +65,7 @@ textarea{width:100%;height:120px;font:12px/1.4 ui-monospace,Menlo,monospace;bord
     <label class="t"><input type="checkbox" id="tts" checked> 음성 안내</label>
   </div>
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
-  <p class="small" id="loadMsg"></p>
+  <p class="small" id="loadMsg">v4 · 11-22</p>
 </div>
 
 <div id="panel" hidden>
@@ -325,7 +325,10 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const waitVideo=()=>new Promise(res=>{ if(video.readyState>=2&&video.videoWidth) return res(); const f=()=>{if(video.videoWidth){video.removeEventListener('loadeddata',f);res()}}; video.addEventListener('loadeddata',f); video.addEventListener('loadedmetadata',f); });
+const VER='v4 · 11-22';
+// 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
+const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
+let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
 $('btnStart').onclick=async()=>{
   const msg=$('loadMsg'); $('btnStart').disabled=true;
   if('speechSynthesis' in window&&$('tts').checked){try{speechSynthesis.speak(new SpeechSynthesisUtterance(''))}catch(e){}} // iOS: 버튼 누를 때 음성 잠금 해제
@@ -333,22 +336,28 @@ $('btnStart').onclick=async()=>{
   try{
     // 1) 카메라를 먼저 연다 (iOS는 버튼을 누른 직후에 요청해야 안정적)
     if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia) throw new Error('이 브라우저는 카메라를 지원하지 않아요. 사파리로 열어 주세요');
-    msg.textContent='카메라 권한을 요청하는 중… (팝업이 뜨면 허용을 눌러 주세요)';
+    progress(1,'카메라 권한 요청 중… 팝업이 뜨면 허용을 눌러 주세요');
     const stream=await withTimeout(navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false}),20000,stage);
-    stage='카메라 화면 재생'; msg.textContent='카메라 화면을 켜는 중…';
+    stage='카메라 화면 재생'; progress(2,'카메라 화면을 켜는 중…');
     video.srcObject=stream;
     video.play().catch(()=>{}); // iOS에서 play()가 끝나지 않는 경우가 있어 기다리지 않음
-    await withTimeout(waitVideo(),8000,stage);
+    let ok=await waitVideo(3000);
+    if(!ok){ // 자동 재생이 막힌 경우: 화면을 한 번 누르면 재생
+      progress(2,'카메라 화면이 안 켜졌어요. 화면 아무 곳이나 한 번 눌러 주세요');
+      const tap=()=>video.play().catch(()=>{}); document.addEventListener('click',tap); document.addEventListener('touchend',tap);
+      ok=await waitVideo(20000); document.removeEventListener('click',tap); document.removeEventListener('touchend',tap);
+      if(!ok) throw new Error(`카메라 영상이 들어오지 않아요 (readyState=${video.readyState}, paused=${video.paused}, 트랙=${stream.getVideoTracks().map(t=>t.readyState).join(',')})`);
+    }
     // 2) 얼굴 인식 모델
-    stage='얼굴 인식 모델 불러오기'; msg.textContent='얼굴 인식 모델을 불러오는 중… (처음 1회 수 초~수십 초)';
-    const files=await withTimeout(FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm"),30000,stage);
+    stage='얼굴 인식 모델 불러오기'; progress(3,'얼굴 인식 모델을 불러오는 중… (처음 1회 수 초~수십 초)');
+    const files=await withTimeout(FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm"),60000,stage);
     const opts=d=>({baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",delegate:d},runningMode:"VIDEO",numFaces:1});
-    try{landmarker=await withTimeout(FaceLandmarker.createFromOptions(files,opts("GPU")),30000,stage+'(GPU)')}
-    catch(e){msg.textContent='GPU 모드 실패 → CPU 모드로 다시 시도 중…'; log.gpuError=String(e&&e.message||e); landmarker=await withTimeout(FaceLandmarker.createFromOptions(files,opts("CPU")),30000,stage+'(CPU)')}
+    try{landmarker=await withTimeout(FaceLandmarker.createFromOptions(files,opts("GPU")),60000,stage+'(GPU)')}
+    catch(e){progress(3,'GPU 모드 실패 → CPU 모드로 다시 시도 중…'); log.gpuError=String(e&&e.message||e); landmarker=await withTimeout(FaceLandmarker.createFromOptions(files,opts("CPU")),60000,stage+'(CPU)')}
     log.delegate=log.gpuError?'CPU':'GPU';
-    $('start').hidden=true; $('panel').hidden=false; say('정면을 보고 잠시 멈춰 주세요.'); render(); raf=requestAnimationFrame(loop);
+    clearInterval(ticker); $('start').hidden=true; $('panel').hidden=false; say('정면을 보고 잠시 멈춰 주세요.'); render(); raf=requestAnimationFrame(loop);
   }catch(e){
-    $('btnStart').disabled=false;
+    clearInterval(ticker); $('btnStart').disabled=false;
     msg.textContent=(e&&e.name==='NotAllowedError')?'카메라 권한이 거부됐어요. 설정 → Safari → 카메라 → 허용 후 새로고침해 주세요.':`시작하지 못했어요 [${stage}]: `+(e&&(e.name?e.name+' ':'')+(e.message||e));
   }
 };
