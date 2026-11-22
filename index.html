@@ -68,7 +68,7 @@ textarea{width:100%;height:120px;font:12px/1.4 ui-monospace,Menlo,monospace;bord
     <label class="t"><input type="checkbox" id="tts" checked> 음성 안내</label>
   </div>
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
-  <p class="small" id="loadMsg">v21 · 11-22</p>
+  <p class="small" id="loadMsg">v22 · 11-22</p>
 </div>
 
 <div id="panel" hidden>
@@ -155,6 +155,7 @@ function hull(pts){ // 볼록 껍질 (monotone chain)
 const ZONE_TRIM={dir:60, amt:.35};
 const trimAt=th=>1-ZONE_TRIM.amt*Math.max(0,Math.cos(th-ZONE_TRIM.dir*Math.PI/180));
 const LIGHT_HOLD={L:12, ab:6}; // 이마 밝기·색이 기준 저장 때보다 이만큼 바뀌면 판정 보류 (가림·조명 변화)
+const LIVE_N=8; let liveBuf=[]; // 실시간 막대: 최근 8번(약 2초) 측정 평균 (v22: 1장만 써서 가만히 있어도 출렁임)
 const BASE_N=12, JUDGE_N=12; // 기준 저장·판정 때 평균 내는 프레임 수 (v21: 6·4 → 12·12)
 const NOISE_K=2.5, COV_FLOOR=1.8; // '바름' 기준 = 잡음×2.5 + 1 (최소 1.8, 최대 판정 강도 기준값)
 // 목표 진하기: 미리보기 슬라이더(.15~.60) → '너무 진해요' 상한. 실기기: 적당히 ≈5, 진하게 7~11
@@ -482,7 +483,7 @@ function captureBaseline(){
   baseBuf=[]; $('btnBase').disabled=true; $('btnBase').textContent='저장 중…';
   log.bareChecked=true;
   const take=()=>{const m=measure(true); if(m) baseBuf.push(m); if(baseBuf.length<BASE_N) setTimeout(take,80); else {
-    baseline=averageMeasures(baseBuf); baseNo++;
+    baseline=averageMeasures(baseBuf); baseNo++; liveBuf=[];
     { // 맨 볼 잡음: 앞 6프레임 평균 vs 뒤 6프레임 평균의 차이 (룩 색 방향) → 판정 때 잡음으로 환산
       const h=BASE_N>>1, A=averageMeasures(baseBuf.slice(0,h)), B=averageMeasures(baseBuf.slice(h));
       const bi=[...baseline.left.inner,...baseline.right.inner], skin=[0,1,2].map(k=>bi.reduce((t,q)=>t+q[k],0)/bi.length);
@@ -552,7 +553,7 @@ function loop(t){
     if(step===-1&&!tone&&lm&&t-toneT>150){ toneT=t; const q=toneSample(), el=$('toneMsg');
       if(q&&Math.abs(q.yaw)<=.1&&q.fhL>=35&&q.fhL<=90){ toneBuf.push(q); if(el){el.className='msg info';el.textContent=`피부 톤 확인 중… ${Math.min(100,Math.round(toneBuf.length/10*100))}%`} if(toneBuf.length>=10) finishTone(); }
       else if(el){ el.className='msg warn'; el.textContent=!q?'얼굴을 찾는 중…':Math.abs(q.yaw)>.1?'정면을 봐 주세요.':'조명이 너무 어둡거나 밝아요. 밝은 곳(창가·정면 조명)으로 이동해 주세요.'; } }
-    if(step===1&&baseline&&lm&&t-lastLive>250){lastLive=t; const t1=performance.now(); const m=measure(); if(m){live=evaluate(m); updateMeters();} measMs=performance.now()-t1;}
+    if(step===1&&baseline&&lm&&t-lastLive>250){lastLive=t; const t1=performance.now(); const m=measure(); if(m){liveBuf.push(m); if(liveBuf.length>LIVE_N) liveBuf.shift(); live=evaluate(averageMeasures(liveBuf)); updateMeters();} measMs=performance.now()-t1;}
   }catch(e){noteErr('측정',e)}
   try{ draw(t); }catch(e){noteErr('그리기',e)}
   frames++; if(t-fpsT>1000){
@@ -563,9 +564,10 @@ function loop(t){
 function updateMeters(){
   if(step!==1||!$('mLb')) return;
   const e=live, set=(id,v,txt)=>{$(id+'b').style.width=Math.max(0,Math.min(100,v*100))+'%';$(id+'n').textContent=txt};
-  if(e){ set('mL',e.L.cov,Math.round(e.L.cov*100)+'%'); set('mR',e.R.cov,Math.round(e.R.cov*100)+'%');
-    set('mS',e.symCov,Math.round(e.symCov*100)+'%'); const o=Math.max(e.L.out,e.R.out); set('mO',o,Math.round(o*100)+'%');
-    const cd=[e.L.colDiff,e.R.colDiff].filter(v=>v!=null); if(cd.length){const w=Math.max(...cd.map(Math.abs)); set('mC',Math.max(0,1-w/90),Math.round(Math.max(0,1-w/90)*100)+'%')} else set('mC',0,'–'); }
+  const pc=v=>Math.round(v*20)*5+'%'; // 5% 단위
+  if(e){ set('mL',e.L.cov,pc(e.L.cov)); set('mR',e.R.cov,pc(e.R.cov));
+    set('mS',e.symCov,pc(e.symCov)); const o=Math.max(e.L.out,e.R.out); set('mO',o,pc(o));
+    const cd=[e.L.colDiff,e.R.colDiff].filter(v=>v!=null); if(cd.length){const w=Math.max(...cd.map(Math.abs)); set('mC',Math.max(0,1-w/90),pc(Math.max(0,1-w/90)))} else set('mC',0,'–'); }
   const sec=Math.round((performance.now()-stepStart)/1000);
   const glr=e&&[['왼쪽 볼',e.L],['오른쪽 볼',e.R]].filter(([,x])=>Math.abs(x.medDl)>SIDE_GLARE).map(([n])=>n);
   const turned=e&&Math.abs(e.yawDiff)>YAW_TOL, lit=e&&(Math.abs(e.lightL)>LIGHT_HOLD.L||Math.hypot(e.light,e.lightB||0)>LIGHT_HOLD.ab);
@@ -591,7 +593,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v21 · 11-22';
+const VER='v22 · 11-22';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
