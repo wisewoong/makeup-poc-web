@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>화장 도우미 PoC</title>
+<style>
+:root{--acc:#e0567a;--ok:#1f9d6b;--warn:#e08a1e;--bad:#d93a3a;--ink:#16181c;--mut:#6b7078;--bg:#fff}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#000;font:15px/1.45 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;color:var(--ink)}
+#stage{position:fixed;inset:0;overflow:hidden;background:#000}
+#video,#overlay{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+#panel{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.96);border-radius:18px 18px 0 0;padding:14px 16px calc(14px + env(safe-area-inset-bottom));box-shadow:0 -6px 24px rgba(0,0,0,.25);max-height:58vh;overflow:auto}
+#top{position:fixed;left:0;right:0;top:0;padding:calc(10px + env(safe-area-inset-top)) 14px 10px;display:flex;justify-content:space-between;align-items:center;gap:8px;color:#fff;background:linear-gradient(rgba(0,0,0,.55),rgba(0,0,0,0))}
+#top b{font-size:15px}
+.chip{font-size:12px;padding:4px 9px;border-radius:99px;background:rgba(255,255,255,.18);white-space:nowrap}
+h2{margin:0 0 4px;font-size:18px}
+p{margin:4px 0 10px;color:#33363c}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+button{appearance:none;border:0;border-radius:12px;min-height:46px;padding:0 16px;font:600 15px/1 inherit;background:#eceef1;color:var(--ink);flex:1 1 auto}
+button.pri{background:var(--acc);color:#fff}
+button.go{background:var(--ok);color:#fff}
+button:disabled{opacity:.4}
+button:focus-visible{outline:3px solid #1d6fe0;outline-offset:2px}
+select{font-size:16px;min-height:40px;border-radius:10px;border:1px solid #ccd;padding:0 8px;background:#fff}
+.meters{display:grid;grid-template-columns:5.5em 1fr 3.2em;gap:6px 8px;align-items:center;font-size:13px;margin:8px 0 4px}
+.bar{height:10px;background:#e7e9ec;border-radius:99px;overflow:hidden;position:relative}
+.bar i{position:absolute;inset:0 auto 0 0;background:var(--acc);border-radius:99px;transition:width .2s}
+.bar s{position:absolute;top:-3px;bottom:-3px;width:2px;background:#222;opacity:.55}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.msg{padding:10px 12px;border-radius:12px;margin:8px 0;font-weight:600}
+.msg.ok{background:#e3f6ee;color:#0f6a46}.msg.bad{background:#fde8e8;color:#9b1f1f}.msg.warn{background:#fff3e0;color:#8a4b00}.msg.info{background:#eef2f7;color:#2b3b52}
+.small{font-size:12px;color:var(--mut)}
+.steps{display:flex;gap:6px;margin-bottom:8px}
+.steps span{flex:1;height:5px;border-radius:9px;background:#e3e5e8}
+.steps span.on{background:var(--acc)}.steps span.done{background:var(--ok)}
+label.t{display:flex;align-items:center;gap:6px;font-size:13px;color:#33363c}
+textarea{width:100%;height:120px;font:12px/1.4 ui-monospace,Menlo,monospace;border-radius:10px;border:1px solid #ccd;padding:8px}
+#start{position:fixed;inset:0;display:flex;flex-direction:column;justify-content:center;padding:28px;background:#fff;z-index:5}
+#start h1{font-size:26px;margin:0 0 8px}
+#start ol{padding-left:1.2em;color:#33363c}
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="video" playsinline muted autoplay></video>
+  <canvas id="overlay"></canvas>
+</div>
+<div id="top"><b>화장 도우미 PoC · 블러셔</b><span class="chip" id="fps">–</span></div>
+
+<div id="start">
+  <h1>화장 도우미 PoC</h1>
+  <p>블러셔 1단계를 AR로 안내하고, 덜 바르면 다음으로 넘어가지 않는지 검증합니다.</p>
+  <ol>
+    <li>휴대폰을 세워 두고 팔 길이 정도 거리에서 정면을 봐 주세요.</li>
+    <li>밝은 곳(창가·정면 조명)에서 블러셔 바르기 <b>전</b> 상태로 시작합니다.</li>
+    <li>블러셔가 없으면 틴트·립을 볼에 톡톡 발라도 됩니다.</li>
+  </ol>
+  <p class="small">카메라 영상은 이 기기 안에서만 처리되고 어디에도 전송되지 않습니다.</p>
+  <div class="row">
+    <label class="t">판정 강도
+      <select id="strength"><option value="loose">느슨</option><option value="normal" selected>보통</option><option value="strict">엄격</option></select>
+    </label>
+    <label class="t"><input type="checkbox" id="tts" checked> 음성 안내</label>
+  </div>
+  <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
+  <p class="small" id="loadMsg"></p>
+</div>
+
+<div id="panel" hidden>
+  <div class="steps"><span id="s1"></span><span id="s2"></span><span id="s3"></span></div>
+  <div id="view"></div>
+  <div class="row" style="margin-top:6px">
+    <label class="t"><input type="checkbox" id="dbg"> 판정 지점 보기</label>
+  </div>
+</div>
+
+<script type="module">
+import {FaceLandmarker, FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/vision_bundle.mjs";
+
+// ---------- 설정 ----------
+const CHEEK_A=[36,50,101,116,117,118,119,123,147,187,205,206,207];      // 화면(원본) 기준 한쪽 볼
+const CHEEK_B=[266,280,330,345,346,347,348,352,376,411,425,426,427];   // 반대쪽 볼 (대칭 쌍)
+const FOREHEAD=[10,151,9,109,338,108,337,67,297];                        // 조명 변화 보정용 기준 영역
+const TEMPLES=[127,356], NOSE=1, FACE_L=234, FACE_R=454;
+const TH={ // 판정 강도별 기준값 (관리자 설정값을 흉내 냄)
+  loose: {cov:2.5, covMin:.55, symTol:.35, outMax:.30, intMax:18},
+  normal:{cov:3.5, covMin:.70, symTol:.25, outMax:.20, intMax:15},
+  strict:{cov:5.0, covMin:.80, symTol:.15, outMax:.12, intMax:12},
+};
+const INNER_T=[.3,.55,.8,.95], OUTER_T=1.5;
+
+// ---------- 상태 ----------
+const $=id=>document.getElementById(id);
+const video=$('video'), cv=$('overlay'), ctx=cv.getContext('2d');
+const off=document.createElement('canvas'), octx=off.getContext('2d',{willReadFrequently:true});
+let landmarker, lm=null, step=0, baseline=null, live=null, fails=0, stepStart=0, lastEval=null, raf=0;
+const log={ua:navigator.userAgent, startedAt:new Date().toISOString(), strength:null, attempts:[]};
+let frames=0, fpsT=performance.now();
+
+// ---------- 유틸 ----------
+const say=t=>{ if(!$('tts').checked||!('speechSynthesis' in window)) return; try{speechSynthesis.cancel(); const u=new SpeechSynthesisUtterance(t); u.lang='ko-KR'; u.rate=1.05; speechSynthesis.speak(u);}catch(e){} };
+function rgb2lab(r,g,b){
+  const f=c=>{c/=255;return c<=.04045?c/12.92:((c+.055)/1.055)**2.4};
+  const R=f(r),G=f(g),B=f(b);
+  let x=(R*.4124+G*.3576+B*.1805)/.95047, y=(R*.2126+G*.7152+B*.0722), z=(R*.0193+G*.1192+B*.9505)/1.08883;
+  const h=t=>t>.008856?Math.cbrt(t):7.787*t+16/116;
+  x=h(x);y=h(y);z=h(z);
+  return [116*y-16, 500*(x-y), 200*(y-z)];
+}
+const P=i=>({x:lm[i].x*cv.width, y:lm[i].y*cv.height});
+const centroid=pts=>({x:pts.reduce((s,p)=>s+p.x,0)/pts.length, y:pts.reduce((s,p)=>s+p.y,0)/pts.length});
+function hull(pts){ // 볼록 껍질 (monotone chain)
+  const a=[...pts].sort((p,q)=>p.x-q.x||p.y-q.y); if(a.length<3) return a;
+  const cr=(o,p,q)=>(p.x-o.x)*(q.y-o.y)-(p.y-o.y)*(q.x-o.x);
+  const lo=[],up=[];
+  for(const p of a){while(lo.length>=2&&cr(lo[lo.length-2],lo[lo.length-1],p)<=0)lo.pop();lo.push(p)}
+  for(const p of a.slice().reverse()){while(up.length>=2&&cr(up[up.length-2],up[up.length-1],p)<=0)up.pop();up.push(p)}
+  return lo.slice(0,-1).concat(up.slice(0,-1));
+}
+function zone(idx){
+  const h=hull(idx.map(P)), c=centroid(h);
+  const inner=[c]; for(const v of h) for(const t of INNER_T) inner.push({x:c.x+(v.x-c.x)*t, y:c.y+(v.y-c.y)*t});
+  const outer=h.map(v=>({x:c.x+(v.x-c.x)*OUTER_T, y:c.y+(v.y-c.y)*OUTER_T}));
+  return {h,c,inner,outer};
+}
+function zones(){
+  const A=zone(CHEEK_A), B=zone(CHEEK_B);
+  // 화면(거울)에서 사용자의 '오른쪽 볼'은 원본 영상의 왼쪽(x 작음)
+  const [right,left]=A.c.x<B.c.x?[A,B]:[B,A];
+  right.name='오른쪽 볼'; left.name='왼쪽 볼';
+  const nose=P(NOSE);
+  for(const z of [left,right]){ const t=TEMPLES.map(P).find(p=>(p.x<nose.x)===(z.c.x<nose.x))||P(TEMPLES[0]); z.temple=t; }
+  return {left,right,fh:FOREHEAD.map(P)};
+}
+function sampleLab(img,p,r){
+  let L=0,a=0,b=0,n=0; const W=img.width,H=img.height,d=img.data;
+  const x0=Math.max(0,Math.round(p.x-r)),x1=Math.min(W-1,Math.round(p.x+r)),y0=Math.max(0,Math.round(p.y-r)),y1=Math.min(H-1,Math.round(p.y+r));
+  for(let y=y0;y<=y1;y+=2)for(let x=x0;x<=x1;x+=2){const k=(y*W+x)*4;const q=rgb2lab(d[k],d[k+1],d[k+2]);L+=q[0];a+=q[1];b+=q[2];n++}
+  return n?[L/n,a/n,b/n]:[0,0,0];
+}
+function measure(){
+  if(!lm) return null;
+  off.width=cv.width; off.height=cv.height; octx.drawImage(video,0,0,off.width,off.height);
+  const img=octx.getImageData(0,0,off.width,off.height);
+  const z=zones(), fw=Math.abs(P(FACE_R).x-P(FACE_L).x), r=Math.max(2,fw*.012);
+  const m=pts=>pts.map(p=>sampleLab(img,p,r));
+  const fh=m(z.fh); const fhA=fh.reduce((s,q)=>s+q[1],0)/fh.length, fhL=fh.reduce((s,q)=>s+q[0],0)/fh.length;
+  return {fw, fwRatio:fw/cv.width, fhA, fhL,
+    left:{inner:m(z.left.inner), outer:m(z.left.outer)}, right:{inner:m(z.right.inner), outer:m(z.right.outer)}};
+}
+function averageMeasures(list){
+  const avg=arrs=>arrs[0].map((_,i)=>[0,1,2].map(k=>arrs.reduce((s,a)=>s+a[i][k],0)/arrs.length));
+  return {fhA:list.reduce((s,m)=>s+m.fhA,0)/list.length,
+    left:{inner:avg(list.map(m=>m.left.inner)),outer:avg(list.map(m=>m.left.outer))},
+    right:{inner:avg(list.map(m=>m.right.inner)),outer:avg(list.map(m=>m.right.outer))}};
+}
+function evaluate(cur){
+  const th=TH[$('strength').value], light=cur.fhA-baseline.fhA;
+  const side=s=>{
+    const d=cur[s].inner.map((q,i)=>(q[1]-baseline[s].inner[i][1])-light);
+    const od=cur[s].outer.map((q,i)=>(q[1]-baseline[s].outer[i][1])-light);
+    const covered=d.map(v=>v>=th.cov);
+    const cov=covered.filter(Boolean).length/d.length;
+    const covVals=d.filter(v=>v>=th.cov);
+    const inten=covVals.length?covVals.reduce((a,b)=>a+b,0)/covVals.length:0;
+    const out=od.filter(v=>v>=th.cov*1.3).length/od.length;
+    return {cov,inten,out,covered};
+  };
+  const L=side('left'), R=side('right');
+  const symCov=Math.abs(L.cov-R.cov), symInt=Math.min(L.inten,R.inten)/Math.max(L.inten,R.inten,1e-6);
+  const issues=[];
+  for(const [n,s] of [['왼쪽 볼',L],['오른쪽 볼',R]]){
+    if(s.cov<th.covMin) issues.push({k:'cov',side:n,t:`${n}에 덜 발린 부분이 있어요 (${Math.round(s.cov*100)}%)`});
+    if(s.out>th.outMax) issues.push({k:'out',side:n,t:`${n} 블러셔가 영역 밖으로 나갔어요. 경계를 블렌딩하세요`});
+    if(s.inten>th.intMax) issues.push({k:'int',side:n,t:`${n}가 너무 진해요. 깨끗한 퍼프로 두드려 덜어내세요`});
+  }
+  if(L.cov>=th.covMin*.8&&R.cov>=th.covMin*.8&&(symCov>th.symTol||symInt<.6)){
+    const weak=(L.cov+L.inten/20)<(R.cov+R.inten/20)?'왼쪽 볼':'오른쪽 볼';
+    issues.push({k:'sym',side:weak,t:`좌우가 달라요. ${weak}을 조금 더 발라주세요`});
+  }
+  return {L,R,symCov,symInt,issues,pass:issues.length===0,light};
+}
+
+// ---------- 그리기 ----------
+function draw(t){
+  ctx.clearRect(0,0,cv.width,cv.height);
+  if(!lm){return}
+  const z=zones();
+  if(step===0){ // 얼굴 위치 안내용 윤곽
+    ctx.strokeStyle='rgba(255,255,255,.7)';ctx.lineWidth=3;
+    for(const s of [z.left,z.right]){ctx.beginPath();s.h.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.closePath();ctx.stroke()}
+    return;
+  }
+  if(step===1){
+    const pulse=.22+.12*Math.sin(t/300);
+    const bad=new Set((lastEval&&!lastEval.pass)?lastEval.issues.map(i=>i.side):[]);
+    for(const s of [z.left,z.right]){
+      const blink=bad.has(s.name)&&Math.floor(t/350)%2===0;
+      ctx.fillStyle=blink?'rgba(217,58,58,.45)':`rgba(224,86,122,${pulse})`;
+      ctx.strokeStyle=blink?'#ff6b6b':'rgba(255,255,255,.9)';ctx.lineWidth=2.5;ctx.setLineDash([8,6]);
+      ctx.beginPath();s.h.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.closePath();ctx.fill();ctx.stroke();ctx.setLineDash([]);
+      // 바르는 방향: 볼 중심 → 관자놀이 쪽
+      const k=((t/1200)%1), a={x:s.c.x+(s.temple.x-s.c.x)*.15,y:s.c.y+(s.temple.y-s.c.y)*.15}, b={x:s.c.x+(s.temple.x-s.c.x)*(.35+.3*k),y:s.c.y+(s.temple.y-s.c.y)*(.35+.3*k)};
+      ctx.strokeStyle='#fff';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
+      const ang=Math.atan2(b.y-a.y,b.x-a.x);ctx.fillStyle='#fff';ctx.beginPath();ctx.moveTo(b.x,b.y);ctx.lineTo(b.x-14*Math.cos(ang-.5),b.y-14*Math.sin(ang-.5));ctx.lineTo(b.x-14*Math.cos(ang+.5),b.y-14*Math.sin(ang+.5));ctx.closePath();ctx.fill();
+    }
+    if($('dbg').checked&&live){
+      for(const [s,res] of [[z.left,live.L],[z.right,live.R]]){
+        s.inner.forEach((p,i)=>{ctx.fillStyle=res.covered[i]?'#3ddc84':'rgba(255,255,255,.8)';ctx.beginPath();ctx.arc(p.x,p.y,3,0,7);ctx.fill()});
+        s.outer.forEach(p=>{ctx.strokeStyle='#ffd54a';ctx.beginPath();ctx.arc(p.x,p.y,4,0,7);ctx.stroke()});
+      }
+    }
+  }
+}
+
+// ---------- 화면(패널) ----------
+const view=$('view');
+function stepsBar(){['s1','s2','s3'].forEach((id,i)=>{$(id).className=i<step?'done':i===step?'on':''})}
+function meterRow(label,v,mark,txt){return `<span>${label}</span><div class="bar"><i style="width:${Math.max(0,Math.min(100,v*100))}%"></i>${mark!=null?`<s style="left:${mark*100}%"></s>`:''}</div><span class="num">${txt}</span>`}
+function render(){
+  stepsBar();
+  const th=TH[$('strength').value];
+  if(step===0){
+    view.innerHTML=`<h2>1. 기준 저장 (화장 전)</h2><p>블러셔를 바르기 <b>전</b> 얼굴을 저장합니다. 정면을 보고 잠시 멈춰 주세요.</p>
+      <div id="chk" class="msg info">얼굴을 찾는 중…</div>
+      <div class="row"><button class="pri" id="btnBase" disabled>기준 저장</button></div>`;
+    $('btnBase').onclick=captureBaseline;
+  } else if(step===1){
+    const mk=(id,label,mark)=>`<span>${label}</span><div class="bar"><i id="${id}b"></i><s style="left:${mark*100}%"></s></div><span class="num" id="${id}n">–</span>`;
+    view.innerHTML=`<h2>2. 블러셔</h2><p>분홍 영역 안에 화살표 방향(관자놀이 쪽)으로 펴 발라 주세요. 다 바르면 손을 내리고 <b>다 발랐어요</b>를 누르세요.</p>
+      <div class="meters">${mk('mL','왼쪽 볼',th.covMin)}${mk('mR','오른쪽 볼',th.covMin)}${mk('mS','좌우 차이',th.symTol)}${mk('mO','영역 이탈',th.outMax)}</div>
+      <div class="small" id="st"></div>
+      <div id="res">${lastEval?resultHtml(lastEval):''}</div>
+      <div class="row" id="nextRow" ${lastEval&&lastEval.pass?'':'hidden'}><button class="go" id="btnNext">다음으로</button></div>
+      <div class="row">
+        <button class="go" id="btnJudge">다 발랐어요</button>
+        <button id="btnSkip" hidden>그래도 넘어가기</button>
+      </div>
+      <div class="row"><button id="btnRebase">기준 다시 저장</button></div>`;
+    $('btnJudge').onclick=judge; $('btnSkip').onclick=()=>finish('SKIPPED'); $('btnNext').onclick=()=>finish('DONE');
+    $('btnRebase').onclick=()=>{step=0;lastEval=null;live=null;render()};
+    updateMeters();
+  } else {
+    const last=log.attempts[log.attempts.length-1];
+    view.innerHTML=`<h2>3. 결과</h2>
+      <div class="msg ${log.result==='DONE'?'ok':'warn'}">${log.result==='DONE'?'블러셔 단계 완료!':'미흡한 상태로 넘어갔어요 (보완 추천 대상)'}</div>
+      <p>시도 ${log.attempts.length}회 · 미흡 ${fails}회 · 소요 ${log.durationSec}초</p>
+      <p class="small">아래 로그를 복사해서 Claude에게 보내 주세요. 기준값 조정에 씁니다. (얼굴 이미지는 포함되지 않습니다)</p>
+      <textarea id="logTxt" readonly>${JSON.stringify(log,null,1)}</textarea>
+      <div class="row"><button class="pri" id="btnCopy">로그 복사</button><button id="btnAgain">다시 하기</button></div>`;
+    $('btnCopy').onclick=async()=>{try{await navigator.clipboard.writeText($('logTxt').value);$('btnCopy').textContent='복사됨'}catch(e){$('logTxt').select();$('btnCopy').textContent='길게 눌러 복사'}};
+    $('btnAgain').onclick=()=>{step=0;fails=0;lastEval=null;log.attempts=[];delete log.result;render()};
+  }
+}
+function resultHtml(e){
+  if(e.pass) return `<div class="msg ok">잘 발렸어요! 다음으로 넘어갈 수 있어요.</div>`;
+  return `<div class="msg bad">${e.issues.map(i=>i.t).join('<br>')}</div>`;
+}
+
+// ---------- 동작 ----------
+let baseBuf=[];
+function captureBaseline(){
+  baseBuf=[]; $('btnBase').disabled=true; $('btnBase').textContent='저장 중…';
+  const take=()=>{const m=measure(); if(m) baseBuf.push(m); if(baseBuf.length<6) setTimeout(take,120); else {
+    baseline=averageMeasures(baseBuf); step=1; fails=0; lastEval=null; stepStart=performance.now();
+    log.strength=$('strength').value; log.baseFhL=Math.round(baseBuf[0].fhL);
+    say('블러셔 단계입니다. 분홍 영역 안에 화살표 방향으로 펴 발라 주세요.'); render();}};
+  take();
+}
+function judge(){
+  const list=[]; let n=0;
+  const take=()=>{const m=measure(); if(m) list.push(m); if(++n<4) setTimeout(take,100); else {
+    const e=evaluate(averageMeasures(list)); lastEval=e;
+    log.attempts.push({t:Math.round((performance.now()-stepStart)/1000), pass:e.pass,
+      L:{cov:+e.L.cov.toFixed(2),int:+e.L.inten.toFixed(1),out:+e.L.out.toFixed(2)},
+      R:{cov:+e.R.cov.toFixed(2),int:+e.R.inten.toFixed(1),out:+e.R.out.toFixed(2)},
+      symCov:+e.symCov.toFixed(2), light:+e.light.toFixed(1), issues:e.issues.map(i=>i.k+':'+i.side)});
+    if(e.pass){ say('잘 발렸어요. 다음으로 넘어갈까요?'); finishPrompt(); }
+    else { fails++; say(e.issues[0].t); render(); }
+  }};
+  take();
+}
+function finishPrompt(){ render(); }
+function finish(result){ log.result=result; log.durationSec=Math.round((performance.now()-stepStart)/1000); step=2; render(); }
+
+// ---------- 루프 ----------
+let lastLive=0;
+function loop(t){
+  if(video.readyState>=2){
+    if(cv.width!==video.videoWidth){cv.width=video.videoWidth;cv.height=video.videoHeight}
+    const res=landmarker.detectForVideo(video,t);
+    lm=res.faceLandmarks&&res.faceLandmarks[0]||null;
+    if(step===0) checkPose();
+    if(step===1&&baseline&&lm&&t-lastLive>250){lastLive=t; const m=measure(); if(m){live=evaluate(m); updateMeters();}}
+    draw(t);
+    frames++; if(t-fpsT>1000){$('fps').textContent=`${frames} fps`+(lm?'':' · 얼굴 없음');frames=0;fpsT=t}
+  }
+  raf=requestAnimationFrame(loop);
+}
+function updateMeters(){
+  if(step!==1||!$('mLb')) return;
+  const e=live, set=(id,v,txt)=>{$(id+'b').style.width=Math.max(0,Math.min(100,v*100))+'%';$(id+'n').textContent=txt};
+  if(e){ set('mL',e.L.cov,Math.round(e.L.cov*100)+'%'); set('mR',e.R.cov,Math.round(e.R.cov*100)+'%');
+    set('mS',e.symCov,Math.round(e.symCov*100)+'%'); const o=Math.max(e.L.out,e.R.out); set('mO',o,Math.round(o*100)+'%'); }
+  const sec=Math.round((performance.now()-stepStart)/1000);
+  $('st').textContent=`세로선 = 기준값 · 판정 강도 ${$('strength').selectedOptions[0].text} · 미흡 ${fails}회 · ${sec}초`;
+  $('btnSkip').hidden=!(fails>=3||sec>=60);
+}
+let poseT=0;
+function checkPose(){
+  const el=$('chk'), btn=$('btnBase'); if(!el) return;
+  const now=performance.now(); if(now-poseT<300) return; poseT=now;
+  if(!lm){el.className='msg warn';el.textContent='얼굴이 안 보여요. 화면 가운데에 얼굴을 맞춰 주세요.';btn.disabled=true;return}
+  const m=measure(); const fr=m.fwRatio;
+  let msg='', cls='ok';
+  if(fr<.30){msg='조금 더 가까이 와 주세요.';cls='warn'} else if(fr>.75){msg='조금 더 멀리 떨어져 주세요.';cls='warn'}
+  else if(m.fhL<35){msg='너무 어두워요. 밝은 곳(창가·정면 조명)으로 이동해 주세요.';cls='warn'}
+  else if(m.fhL>88){msg='빛이 너무 강해요. 정면 직사광을 피해 주세요.';cls='warn'}
+  else msg='좋아요! 기준 저장을 눌러 주세요.';
+  el.className='msg '+cls; el.textContent=msg; btn.disabled=cls!=='ok';
+}
+
+// ---------- 시작 ----------
+$('btnStart').onclick=async()=>{
+  const msg=$('loadMsg'); $('btnStart').disabled=true; msg.textContent='얼굴 인식 모델을 불러오는 중… (처음 1회 수 초)';
+  try{
+    const files=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm");
+    const opts=d=>({baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",delegate:d},runningMode:"VIDEO",numFaces:1});
+    try{landmarker=await FaceLandmarker.createFromOptions(files,opts("GPU"))}catch(e){landmarker=await FaceLandmarker.createFromOptions(files,opts("CPU"))}
+    msg.textContent='카메라를 여는 중…';
+    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});
+    video.srcObject=stream; await video.play();
+    $('start').hidden=true; $('panel').hidden=false; say('정면을 보고 잠시 멈춰 주세요.'); render(); raf=requestAnimationFrame(loop);
+  }catch(e){
+    $('btnStart').disabled=false;
+    msg.textContent=(e&&e.name==='NotAllowedError')?'카메라 권한이 거부됐어요. 브라우저 설정에서 카메라를 허용해 주세요.':'시작하지 못했어요: '+(e&&e.message||e)+' (https 주소에서 열었는지 확인해 주세요)';
+  }
+};
+$('dbg').onchange=()=>{};
+</script>
+</body>
+</html>
