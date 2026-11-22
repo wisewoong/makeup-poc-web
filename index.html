@@ -13,7 +13,7 @@ html,body{margin:0;height:100%;background:#000;font:15px/1.45 -apple-system,Blin
 #video,#overlay{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
 #panel{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.96);border-radius:18px 18px 0 0;padding:14px 16px calc(14px + env(safe-area-inset-bottom));box-shadow:0 -6px 24px rgba(0,0,0,.25);max-height:58vh;overflow:auto}
 #top{position:fixed;left:0;right:0;top:0;padding:calc(10px + env(safe-area-inset-top)) 14px 10px;display:flex;justify-content:space-between;align-items:center;gap:8px;color:#fff;background:linear-gradient(rgba(0,0,0,.55),rgba(0,0,0,0))}
-#top b{font-size:15px}
+#top b{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .chip{font-size:12px;padding:4px 9px;border-radius:99px;background:rgba(255,255,255,.18);white-space:nowrap}
 h2{margin:0 0 4px;font-size:18px}
 p{margin:4px 0 10px;color:#33363c}
@@ -54,7 +54,7 @@ body:not(.dev) .dev{display:none!important}
   <video id="video" playsinline muted autoplay></video>
   <canvas id="overlay"></canvas>
 </div>
-<div id="top"><b>화장 도우미 PoC · 블러셔</b><span class="chip" id="fps">–</span></div>
+<div id="top"><b>화장 도우미 PoC · 블러셔</b><span style="display:flex;gap:6px;align-items:center"><span class="chip" id="fps">–</span><button id="devBtn" class="chip" style="min-height:30px;flex:none;border:1px solid rgba(255,255,255,.5);color:#fff;font:600 12px/1 inherit;padding:0 10px">수치 보기</button></span></div>
 
 <div id="start">
   <h1>화장 도우미 PoC</h1>
@@ -75,14 +75,14 @@ body:not(.dev) .dev{display:none!important}
     <label class="t"><input type="checkbox" id="tts" checked> 음성 안내</label>
   </div>
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
-  <p class="small" id="loadMsg">v23 · 11-22</p>
+  <p class="small" id="loadMsg">v24 · 11-22</p>
 </div>
 
 <div id="panel" hidden>
   <div class="steps"><span id="s0"></span><span id="s1"></span><span id="s2"></span><span id="s3"></span></div>
   <div id="view"></div>
   <div class="row" style="margin-top:6px">
-    <label class="t"><input type="checkbox" id="devMode"> 테스트용 수치 보기</label>
+    <input type="checkbox" id="devMode" hidden>
     <label class="t dev"><input type="checkbox" id="showPts"> 판정 지점 보기</label>
     <label class="t dev"><input type="checkbox" id="showMap" checked> 변화 지도 보기</label>
     <label class="t dev"><input type="checkbox" id="fillZone"> 영역 색 채우기</label>
@@ -142,7 +142,9 @@ let frames=0, fpsT=performance.now();
 // ---------- 테스트용 수치 보기 (기본 꺼짐 = 실제 사용자 화면) ----------
 const devOn=()=>document.body.classList.contains('dev');
 try{ if(localStorage.getItem('devMode')==='1'){ $('devMode').checked=true; document.body.classList.add('dev'); } }catch(e){}
-$('devMode').onchange=e=>{ document.body.classList.toggle('dev',e.target.checked); try{localStorage.setItem('devMode',e.target.checked?'1':'0')}catch(_){} };
+const devSync=()=>{ const on=$('devMode').checked; document.body.classList.toggle('dev',on); $('devBtn').textContent=on?'수치 숨기기':'수치 보기'; $('devBtn').style.background=on?'#e0567a':''; try{localStorage.setItem('devMode',on?'1':'0')}catch(_){} };
+$('devBtn').onclick=()=>{ $('devMode').checked=!$('devMode').checked; devSync(); };
+devSync();
 
 // ---------- 유틸 ----------
 const say=t=>{ if(!$('tts').checked||!('speechSynthesis' in window)) return; try{speechSynthesis.cancel(); const u=new SpeechSynthesisUtterance(t); u.lang='ko-KR'; u.rate=1.05; speechSynthesis.speak(u);}catch(e){} };
@@ -571,7 +573,7 @@ function loop(t){
   }catch(e){noteErr('측정',e)}
   try{ draw(t); }catch(e){noteErr('그리기',e)}
   frames++; if(t-fpsT>1000){
-    $('fps').textContent=devOn()?`${frames} fps · 인식 ${Math.round(detMs)}ms · 측정 ${Math.round(measMs)}ms`+(lm?'':' · 얼굴 없음')+(lastErr?' · ⚠ '+lastErr.slice(0,40):''):(lm?'얼굴 인식 중':'얼굴을 화면에 맞춰 주세요');
+    $('fps').textContent=devOn()?`${frames}fps ${Math.round(detMs)}/${Math.round(measMs)}ms`+(lm?'':' 얼굴없음')+(lastErr?' ⚠'+lastErr.slice(0,20):''):(lm?'얼굴 인식 중':'얼굴을 화면에 맞춰 주세요');
     if(step===1){log.perf=log.perf||{}; log.perf.fps=frames; log.perf.detMs=Math.round(detMs); log.perf.measMs=Math.round(measMs);}
     frames=0;fpsT=t}
 }
@@ -612,7 +614,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v23 · 11-22';
+const VER='v24 · 11-22';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
