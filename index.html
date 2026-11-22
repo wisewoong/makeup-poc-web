@@ -65,7 +65,7 @@ textarea{width:100%;height:120px;font:12px/1.4 ui-monospace,Menlo,monospace;bord
     <label class="t"><input type="checkbox" id="tts" checked> 음성 안내</label>
   </div>
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
-  <p class="small" id="loadMsg">v5 · 11-22</p>
+  <p class="small" id="loadMsg">v6 · 11-22</p>
 </div>
 
 <div id="panel" hidden>
@@ -89,7 +89,9 @@ const TH={ // 판정 강도별 기준값 (관리자 설정값을 흉내 냄)
   normal:{cov:3.5, covMin:.70, symTol:.25, outMax:.20, intMax:15},
   strict:{cov:5.0, covMin:.80, symTol:.15, outMax:.12, intMax:12},
 };
-const INNER_T=[.3,.55,.8,.95], OUTER_T=1.5;
+const INNER_T=[.3,.55,.8,.95], OUTER_T=1.6;
+const OUT_REL=.7;   // 영역 이탈: 바깥 지점이 안쪽 평균 진하기의 70% 이상일 때만 이탈로 봄 (경계 블렌딩은 허용)
+const YAW_TOL=.12;  // 판정 보류: 기준 저장 때보다 고개가 이만큼 더 돌아가면
 
 // ---------- 상태 ----------
 const $=id=>document.getElementById(id);
@@ -167,10 +169,11 @@ function evaluate(cur){
     const cov=covered.filter(Boolean).length/d.length;
     const covVals=d.filter(v=>v>=th.cov);
     const inten=covVals.length?covVals.reduce((a,b)=>a+b,0)/covVals.length:0;
-    const out=od.filter(v=>v>=th.cov*1.3).length/od.length;
+    const outTh=Math.max(th.cov*1.3, inten*OUT_REL);
+    const out=od.filter(v=>v>=outTh).length/od.length;
     const avgD=d.reduce((a,b)=>a+b,0)/d.length;
     const dL=cur[s].inner.reduce((a,q,i)=>a+q[0]-baseline[s].inner[i][0],0)/d.length; // 밝기 변화 (블러셔는 보통 약간 어두워짐)
-    return {cov,inten,out,covered,avgD,dL,d};
+    return {cov,inten,out,covered,avgD,dL,d,od};
   };
   const L=side('left'), R=side('right');
   const symCov=Math.abs(L.cov-R.cov), symInt=Math.min(L.inten,R.inten)/Math.max(L.inten,R.inten,1e-6);
@@ -244,7 +247,10 @@ function render(){
       </div>
       <div class="row"><button id="btnRebase">기준 다시 저장</button></div>`;
     $('btnJudge').onclick=judge; $('btnSkip').onclick=()=>finish('SKIPPED'); $('btnNext').onclick=()=>finish('DONE');
-    $('btnRebase').onclick=()=>{step=0;lastEval=null;live=null;render()};
+    $('btnRebase').onclick=()=>{
+      if(!confirm('기준은 블러셔를 바르기 전 얼굴로 저장해야 해요.\n이미 발랐다면 지운 뒤에 다시 저장해 주세요.\n\n지금 다시 저장할까요?')) return;
+      (log.events=log.events||[]).push({rebase:Math.round((performance.now()-stepStart)/1000)});
+      step=0;lastEval=null;live=null;render()};
     updateMeters();
   } else {
     const last=log.attempts[log.attempts.length-1];
@@ -264,11 +270,11 @@ function resultHtml(e){
 }
 
 // ---------- 동작 ----------
-let baseBuf=[];
+let baseBuf=[], baseNo=0;
 function captureBaseline(){
   baseBuf=[]; $('btnBase').disabled=true; $('btnBase').textContent='저장 중…';
   const take=()=>{const m=measure(); if(m) baseBuf.push(m); if(baseBuf.length<6) setTimeout(take,120); else {
-    baseline=averageMeasures(baseBuf); step=1; fails=0; lastEval=null; stepStart=performance.now();
+    baseline=averageMeasures(baseBuf); baseNo++; step=1; fails=0; lastEval=null; stepStart=performance.now();
     log.strength=$('strength').value; log.baseFhL=Math.round(baseBuf[0].fhL); log.ver=VER;
     log.video=`${video.videoWidth}x${video.videoHeight}`; log.baseYaw=r2(baseline.yaw); log.baseFw=r2(baseline.fwRatio);
     say('블러셔 단계입니다. 분홍 영역 안에 화살표 방향으로 펴 발라 주세요.'); render();}};
@@ -276,16 +282,16 @@ function captureBaseline(){
 }
 const r1=v=>Math.round(v*10)/10, r2=v=>Math.round(v*100)/100;
 // 로그용 상세값: 판정 지점별 붉은 기 증가량(d), 밝기 변화(dL), 얼굴 방향(yaw)
-const sideLog=x=>({cov:r2(x.cov),int:r1(x.inten),out:r2(x.out),avgD:r1(x.avgD),dL:r1(x.dL),d:x.d.map(v=>Math.round(v)).join(",")});
+const sideLog=x=>({cov:r2(x.cov),int:r1(x.inten),out:r2(x.out),avgD:r1(x.avgD),dL:r1(x.dL),d:x.d.map(v=>Math.round(v)).join(","),od:x.od.map(v=>Math.round(v)).join(",")});
 function judge(){
   const list=[]; let n=0;
   const take=()=>{const m=measure(); if(m) list.push(m); if(++n<4) setTimeout(take,100); else {
     if(list.length<2){ $('res').innerHTML='<div class="msg warn">얼굴이 잘 안 보여요. 손을 내리고 정면을 본 뒤 다시 눌러 주세요.</div>'; say('얼굴이 잘 안 보여요. 정면을 봐 주세요.'); return; }
     const avg=averageMeasures(list);
-    if(Math.abs(avg.yaw)>.15){ // 판정 보류: 고개가 돌아가면 한쪽 볼 조명·각도가 달라짐
+    if(Math.abs(avg.yaw-baseline.yaw)>YAW_TOL){ // 판정 보류: 고개가 돌아가면 한쪽 볼 조명·각도가 달라짐
       log.holds=(log.holds||0)+1; $('res').innerHTML='<div class="msg warn">고개가 살짝 돌아가 있어요. 정면을 보고 다시 눌러 주세요. (판정 보류, 미흡 횟수에 안 들어가요)</div>'; say('정면을 보고 다시 눌러 주세요.'); return; }
     const e=evaluate(avg); lastEval=e;
-    log.attempts.push({t:Math.round((performance.now()-stepStart)/1000), pass:e.pass,
+    log.attempts.push({base:baseNo, t:Math.round((performance.now()-stepStart)/1000), pass:e.pass,
       L:sideLog(e.L), R:sideLog(e.R), yaw:r2(avg.yaw), fw:r2(avg.fwRatio), fhL:Math.round(avg.fhL),
       symCov:r2(e.symCov), light:r1(e.light), issues:e.issues.map(i=>i.k+':'+i.side)});
     if(e.pass){ say('잘 발렸어요. 다음으로 넘어갈까요?'); finishPrompt(); }
@@ -329,6 +335,7 @@ function checkPose(){
   const m=measure(); const fr=m.fwRatio;
   let msg='', cls='ok';
   if(fr<.30){msg='조금 더 가까이 와 주세요.';cls='warn'} else if(fr>.75){msg='조금 더 멀리 떨어져 주세요.';cls='warn'}
+  else if(Math.abs(m.yaw)>.1){msg='얼굴이 살짝 옆을 보고 있어요. 휴대폰을 얼굴 정면 가운데에 두고 똑바로 봐 주세요.';cls='warn'}
   else if(m.fhL<35){msg='너무 어두워요. 밝은 곳(창가·정면 조명)으로 이동해 주세요.';cls='warn'}
   else if(m.fhL>88){msg='빛이 너무 강해요. 정면 직사광을 피해 주세요.';cls='warn'}
   else msg='좋아요! 기준 저장을 눌러 주세요.';
@@ -338,7 +345,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v5 · 11-22';
+const VER='v6 · 11-22';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
