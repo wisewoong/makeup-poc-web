@@ -65,7 +65,7 @@ textarea{width:100%;height:120px;font:12px/1.4 ui-monospace,Menlo,monospace;bord
     <label class="t"><input type="checkbox" id="tts" checked> 음성 안내</label>
   </div>
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
-  <p class="small" id="loadMsg">v8 · 11-22</p>
+  <p class="small" id="loadMsg">v9 · 11-22</p>
 </div>
 
 <div id="panel" hidden>
@@ -137,15 +137,21 @@ function zones(){
   return {left,right,fh:FOREHEAD.map(P)};
 }
 function sampleLab(img,p,r){
-  let L=0,a=0,b=0,n=0; const W=img.width,H=img.height,d=img.data;
-  const x0=Math.max(0,Math.round(p.x-r)),x1=Math.min(W-1,Math.round(p.x+r)),y0=Math.max(0,Math.round(p.y-r)),y1=Math.min(H-1,Math.round(p.y+r));
+  let L=0,a=0,b=0,n=0; const W=img.width,H=img.height,d=img.data, px=p.x-img.ox, py=p.y-img.oy; // img는 얼굴 부분만 잘라낸 영역
+  const x0=Math.max(0,Math.round(px-r)),x1=Math.min(W-1,Math.round(px+r)),y0=Math.max(0,Math.round(py-r)),y1=Math.min(H-1,Math.round(py+r));
   for(let y=y0;y<=y1;y+=2)for(let x=x0;x<=x1;x+=2){const k=(y*W+x)*4;const q=rgb2lab(d[k],d[k+1],d[k+2]);L+=q[0];a+=q[1];b+=q[2];n++}
   return n?[L/n,a/n,b/n]:[0,0,0];
 }
 function measure(){
   if(!lm) return null;
-  off.width=cv.width; off.height=cv.height; octx.drawImage(video,0,0,off.width,off.height);
-  const img=octx.getImageData(0,0,off.width,off.height);
+  // 얼굴 둘레만 잘라 읽기 (전체 화면을 읽으면 iOS에서 프레임이 크게 끊김)
+  let x0=1,y0=1,x1=0,y1=0; for(const q of lm){if(q.x<x0)x0=q.x;if(q.x>x1)x1=q.x;if(q.y<y0)y0=q.y;if(q.y>y1)y1=q.y}
+  const mx=(x1-x0)*.35, my=(y1-y0)*.15;
+  const sx=Math.max(0,Math.floor((x0-mx)*cv.width)), sy=Math.max(0,Math.floor((y0-my)*cv.height));
+  const sw=Math.max(1,Math.min(cv.width,Math.ceil((x1+mx)*cv.width))-sx), sh=Math.max(1,Math.min(cv.height,Math.ceil((y1+my)*cv.height))-sy);
+  if(off.width<sw||off.height<sh){off.width=Math.max(off.width,sw);off.height=Math.max(off.height,sh)} // 크기를 매번 바꾸지 않음
+  octx.drawImage(video,sx,sy,sw,sh,0,0,sw,sh);
+  const img=octx.getImageData(0,0,sw,sh); img.ox=sx; img.oy=sy;
   const z=zones(), fw=Math.abs(P(FACE_R).x-P(FACE_L).x), r=Math.max(2,fw*.012);
   const m=pts=>pts.map(p=>sampleLab(img,p,r));
   const fh=m(z.fh); const fhA=fh.reduce((s,q)=>s+q[1],0)/fh.length, fhL=fh.reduce((s,q)=>s+q[0],0)/fh.length;
@@ -194,7 +200,7 @@ function evaluate(cur){
 
 // ---------- 그리기 ----------
 // 화면 떨림 줄이기: 윤곽 점을 이전 프레임과 섞음
-const ema={}; function steady(key,pts,k=.45){const o=ema[key];if(!o||o.length!==pts.length){ema[key]=pts.map(p=>({...p}));return ema[key]}for(let i=0;i<pts.length;i++){o[i].x+=(pts[i].x-o[i].x)*k;o[i].y+=(pts[i].y-o[i].y)*k}return o}
+const ema={}; function steady(key,pts,k=.65){const o=ema[key];if(!o||o.length!==pts.length){ema[key]=pts.map(p=>({...p}));return ema[key]}for(let i=0;i<pts.length;i++){o[i].x+=(pts[i].x-o[i].x)*k;o[i].y+=(pts[i].y-o[i].y)*k}return o}
 // 볼 영역 윤곽을 같은 크기·기울기의 타원으로 (경계를 촘촘히 샘플링해 공분산으로 맞춤)
 function ellipseOf(h){
   const pts=[]; for(let i=0;i<h.length;i++){const p=h[i],q=h[(i+1)%h.length];for(let k=0;k<8;k++)pts.push({x:p.x+(q.x-p.x)*k/8,y:p.y+(q.y-p.y)*k/8})}
@@ -327,17 +333,26 @@ function finish(result){
 
 // ---------- 루프 ----------
 let lastLive=0;
+let detMs=0, measMs=0, lastErr='';
+function noteErr(where,e){ // 오류가 나도 루프는 계속. 화면 상단·로그에 남김
+  const m=`${where}: ${e&&e.message||e}`; lastErr=m; log.errors=log.errors||[];
+  if(log.errors.length<8&&!log.errors.includes(m)) log.errors.push(m);
+}
 function loop(t){
-  if(video.readyState>=2){
-    if(cv.width!==video.videoWidth){cv.width=video.videoWidth;cv.height=video.videoHeight}
-    const res=landmarker.detectForVideo(video,t);
-    lm=res.faceLandmarks&&res.faceLandmarks[0]||null;
+  raf=requestAnimationFrame(loop); // 먼저 다음 프레임 예약 → 아래에서 오류가 나도 멈추지 않음
+  if(video.readyState<2) return;
+  if(cv.width!==video.videoWidth){cv.width=video.videoWidth;cv.height=video.videoHeight}
+  try{ const t0=performance.now(); const res=landmarker.detectForVideo(video,t); detMs=detMs*.8+(performance.now()-t0)*.2;
+    lm=res.faceLandmarks&&res.faceLandmarks[0]||null; }catch(e){noteErr('인식',e)}
+  try{
     if(step===0) checkPose();
-    if(step===1&&baseline&&lm&&t-lastLive>250){lastLive=t; const m=measure(); if(m){live=evaluate(m); updateMeters();}}
-    draw(t);
-    frames++; if(t-fpsT>1000){$('fps').textContent=`${frames} fps`+(lm?'':' · 얼굴 없음');frames=0;fpsT=t}
-  }
-  raf=requestAnimationFrame(loop);
+    if(step===1&&baseline&&lm&&t-lastLive>250){lastLive=t; const t1=performance.now(); const m=measure(); if(m){live=evaluate(m); updateMeters();} measMs=performance.now()-t1;}
+  }catch(e){noteErr('측정',e)}
+  try{ draw(t); }catch(e){noteErr('그리기',e)}
+  frames++; if(t-fpsT>1000){
+    $('fps').textContent=`${frames} fps · 인식 ${Math.round(detMs)}ms · 측정 ${Math.round(measMs)}ms`+(lm?'':' · 얼굴 없음')+(lastErr?' · ⚠ '+lastErr.slice(0,40):'');
+    if(step===1){log.perf=log.perf||{}; log.perf.fps=frames; log.perf.detMs=Math.round(detMs); log.perf.measMs=Math.round(measMs);}
+    frames=0;fpsT=t}
 }
 function updateMeters(){
   if(step!==1||!$('mLb')) return;
@@ -367,7 +382,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v8 · 11-22';
+const VER='v9 · 11-22';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
