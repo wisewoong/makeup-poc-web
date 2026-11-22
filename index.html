@@ -40,6 +40,13 @@ textarea{width:100%;height:120px;font:12px/1.4 ui-monospace,Menlo,monospace;bord
 #start{position:fixed;inset:0;display:flex;flex-direction:column;justify-content:center;padding:28px;background:#fff;z-index:5}
 #start h1{font-size:26px;margin:0 0 8px}
 #start ol{padding-left:1.2em;color:#33363c}
+body:not(.dev) .dev{display:none!important}
+.prog{display:flex;gap:10px;margin:8px 0 4px}
+.pr{flex:1;display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:12px;background:#f4f5f7}
+.ring{width:38px;height:38px;border-radius:50%;flex:none;background:conic-gradient(var(--acc) calc(var(--p)*1%),#e3e5e8 0);display:grid;place-items:center;transition:--p .3s}
+.ring::after{content:"";width:28px;height:28px;border-radius:50%;background:#f4f5f7}
+.pr.ok .ring{background:conic-gradient(var(--ok) 100%,#e3e5e8 0)}
+.pr b{display:block;font-size:14px}.pr small{color:var(--mut);font-size:12px}
 </style>
 </head>
 <body>
@@ -68,16 +75,17 @@ textarea{width:100%;height:120px;font:12px/1.4 ui-monospace,Menlo,monospace;bord
     <label class="t"><input type="checkbox" id="tts" checked> 음성 안내</label>
   </div>
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
-  <p class="small" id="loadMsg">v22 · 11-22</p>
+  <p class="small" id="loadMsg">v23 · 11-22</p>
 </div>
 
 <div id="panel" hidden>
   <div class="steps"><span id="s0"></span><span id="s1"></span><span id="s2"></span><span id="s3"></span></div>
   <div id="view"></div>
   <div class="row" style="margin-top:6px">
-    <label class="t"><input type="checkbox" id="showPts"> 판정 지점 보기</label>
-    <label class="t"><input type="checkbox" id="showMap" checked> 변화 지도 보기</label>
-    <label class="t"><input type="checkbox" id="fillZone"> 영역 색 채우기</label>
+    <label class="t"><input type="checkbox" id="devMode"> 테스트용 수치 보기</label>
+    <label class="t dev"><input type="checkbox" id="showPts"> 판정 지점 보기</label>
+    <label class="t dev"><input type="checkbox" id="showMap" checked> 변화 지도 보기</label>
+    <label class="t dev"><input type="checkbox" id="fillZone"> 영역 색 채우기</label>
   </div>
 </div>
 
@@ -130,6 +138,11 @@ const off=document.createElement('canvas'), octx=off.getContext('2d',{willReadFr
 let landmarker, lm=null, step=0, baseline=null, live=null, fails=0, stepStart=0, lastEval=null, raf=0;
 const log={ua:navigator.userAgent, startedAt:new Date().toISOString(), strength:null, attempts:[]};
 let frames=0, fpsT=performance.now();
+
+// ---------- 테스트용 수치 보기 (기본 꺼짐 = 실제 사용자 화면) ----------
+const devOn=()=>document.body.classList.contains('dev');
+try{ if(localStorage.getItem('devMode')==='1'){ $('devMode').checked=true; document.body.classList.add('dev'); } }catch(e){}
+$('devMode').onchange=e=>{ document.body.classList.toggle('dev',e.target.checked); try{localStorage.setItem('devMode',e.target.checked?'1':'0')}catch(_){} };
 
 // ---------- 유틸 ----------
 const say=t=>{ if(!$('tts').checked||!('speechSynthesis' in window)) return; try{speechSynthesis.cancel(); const u=new SpeechSynthesisUtterance(t); u.lang='ko-KR'; u.rate=1.05; speechSynthesis.speak(u);}catch(e){} };
@@ -349,7 +362,7 @@ function ellipseOf(h){
 }
 function softZone(s,alpha,warn){
   const raw=ellipseOf(s.edge), [e]=steady(s.name,[raw]); e.rot=raw.rot; e.a+=(raw.a-e.a)*.65; e.b+=(raw.b-e.b)*.65;
-  if($('fillZone').checked){ // 선택: 영역 색 채우기 (실제 발린 색이 가려짐)
+  if(devOn()&&$('fillZone').checked){ // 선택: 영역 색 채우기 (실제 발린 색이 가려짐)
     const col=warn?'217,58,58':'236,96,130';
     ctx.save(); ctx.translate(e.x,e.y); ctx.rotate(e.rot); ctx.scale(1,e.b/e.a);
     const g=ctx.createRadialGradient(0,0,0,0,0,e.a);
@@ -391,11 +404,11 @@ function draw(t){
       ctx.strokeStyle='#fff';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
       const ang=Math.atan2(b.y-a.y,b.x-a.x);ctx.fillStyle='#fff';ctx.beginPath();ctx.moveTo(b.x,b.y);ctx.lineTo(b.x-14*Math.cos(ang-.5),b.y-14*Math.sin(ang-.5));ctx.lineTo(b.x-14*Math.cos(ang+.5),b.y-14*Math.sin(ang+.5));ctx.closePath();ctx.fill();
     }
-    if($('showMap').checked&&lastMap){ // 변화 지도: 노랑(약)→빨강(강)
+    if(devOn()&&$('showMap').checked&&lastMap){ // 변화 지도: 노랑(약)→빨강(강)
       lastMap.forEach((v,i)=>{ if(v<2) return; const p=P(i);
         ctx.fillStyle=v>=7?'rgba(230,30,30,.95)':v>=4?'rgba(255,140,0,.9)':'rgba(255,225,0,.85)';
         ctx.beginPath(); ctx.arc(p.x,p.y,v>=4?4.5:3.5,0,7); ctx.fill(); }); }
-    if($('showPts').checked&&live){
+    if(devOn()&&$('showPts').checked&&live){
       for(const [s,res] of [[z.left,live.L],[z.right,live.R]]){
         s.inner.forEach((p,i)=>{ctx.fillStyle=res.covered[i]?'#3ddc84':'rgba(255,255,255,.8)';ctx.beginPath();ctx.arc(p.x,p.y,3,0,7);ctx.fill()});
         s.outer.forEach(p=>{ctx.strokeStyle='#ffd54a';ctx.beginPath();ctx.arc(p.x,p.y,4,0,7);ctx.stroke()});
@@ -443,7 +456,8 @@ function render(){
   } else if(step===1){
     const mk=(id,label,mark)=>`<span>${label}</span><div class="bar"><i id="${id}b"></i><s style="left:${mark*100}%"></s></div><span class="num" id="${id}n">–</span>`;
     view.innerHTML=`<h2>3. 블러셔 <span style="display:inline-block;width:14px;height:14px;border-radius:50%;vertical-align:-1px;background:${LOOKS[$('look').value].hex}"></span> <span class="small">${LOOKS[$('look').value].name} 룩 · ${levelName(pvAlpha)}</span></h2><p>점선 영역 안에 화살표 방향(관자놀이 쪽)으로 펴 발라 주세요. 다 바르면 손을 내리고 <b>다 발랐어요</b>를 누르세요.</p>
-      <div class="meters">${mk('mL','왼쪽 볼',th.covMin)}${mk('mR','오른쪽 볼',th.covMin)}${mk('mS','좌우 차이',th.symTol)}${mk('mO','영역 이탈',th.outMax)}${mk('mC','색 일치',1-th.colTol/90)}</div>
+      <div class="prog"><div class="pr" id="pL"><div class="ring" style="--p:0"></div><div><b>왼쪽 볼</b><small>발라 주세요</small></div></div><div class="pr" id="pR"><div class="ring" style="--p:0"></div><div><b>오른쪽 볼</b><small>발라 주세요</small></div></div></div>
+      <div class="meters dev">${mk('mL','왼쪽 볼',th.covMin)}${mk('mR','오른쪽 볼',th.covMin)}${mk('mS','좌우 차이',th.symTol)}${mk('mO','영역 이탈',th.outMax)}${mk('mC','색 일치',1-th.colTol/90)}</div>
       <div class="small" id="st"></div>
       <div id="res">${lastEval?resultHtml(lastEval):''}</div>
       <div class="row" id="nextRow" ${lastEval&&lastEval.pass?'':'hidden'}><button class="go" id="btnNext">다음으로</button></div>
@@ -557,7 +571,7 @@ function loop(t){
   }catch(e){noteErr('측정',e)}
   try{ draw(t); }catch(e){noteErr('그리기',e)}
   frames++; if(t-fpsT>1000){
-    $('fps').textContent=`${frames} fps · 인식 ${Math.round(detMs)}ms · 측정 ${Math.round(measMs)}ms`+(lm?'':' · 얼굴 없음')+(lastErr?' · ⚠ '+lastErr.slice(0,40):'');
+    $('fps').textContent=devOn()?`${frames} fps · 인식 ${Math.round(detMs)}ms · 측정 ${Math.round(measMs)}ms`+(lm?'':' · 얼굴 없음')+(lastErr?' · ⚠ '+lastErr.slice(0,40):''):(lm?'얼굴 인식 중':'얼굴을 화면에 맞춰 주세요');
     if(step===1){log.perf=log.perf||{}; log.perf.fps=frames; log.perf.detMs=Math.round(detMs); log.perf.measMs=Math.round(measMs);}
     frames=0;fpsT=t}
 }
@@ -568,10 +582,15 @@ function updateMeters(){
   if(e){ set('mL',e.L.cov,pc(e.L.cov)); set('mR',e.R.cov,pc(e.R.cov));
     set('mS',e.symCov,pc(e.symCov)); const o=Math.max(e.L.out,e.R.out); set('mO',o,pc(o));
     const cd=[e.L.colDiff,e.R.colDiff].filter(v=>v!=null); if(cd.length){const w=Math.max(...cd.map(Math.abs)); set('mC',Math.max(0,1-w/90),pc(Math.max(0,1-w/90)))} else set('mC',0,'–'); }
+  if(e){ const th=TH[$('strength').value];
+    for(const [id,x] of [['pL',e.L],['pR',e.R]]){ const el=$(id); if(!el) continue;
+      const p=Math.min(1,x.cov/th.covMin), done=p>=1;
+      el.classList.toggle('ok',done); el.querySelector('.ring').style.setProperty('--p',Math.round(p*20)*5);
+      el.querySelector('small').textContent=done?'좋아요':p>=.6?'거의 다 됐어요':p>=.2?'조금 더 발라 주세요':'발라 주세요'; } }
   const sec=Math.round((performance.now()-stepStart)/1000);
   const glr=e&&[['왼쪽 볼',e.L],['오른쪽 볼',e.R]].filter(([,x])=>Math.abs(x.medDl)>SIDE_GLARE).map(([n])=>n);
   const turned=e&&Math.abs(e.yawDiff)>YAW_TOL, lit=e&&(Math.abs(e.lightL)>LIGHT_HOLD.L||Math.hypot(e.light,e.lightB||0)>LIGHT_HOLD.ab);
-  $('st').innerHTML=(glr&&glr.length?`<b style="color:#b3261e">${glr.join('·')}에 빛 반사·측면 조명이 있어요</b><br>`:'')+(lit?'<b style="color:#b3261e">이마가 가려졌거나 조명이 바뀌었어요</b><br>':'')+(turned?'<b style="color:#b3261e">고개가 돌아갔어요 · 기준 저장 때처럼 정면을 봐 주세요</b><br>':'')+`세로선 = 기준값 · 판정 강도 ${$('strength').selectedOptions[0].text} · 미흡 ${fails}회 · ${sec}초`;
+  $('st').innerHTML=(glr&&glr.length?`<b style="color:#b3261e">${glr.join('·')}에 빛 반사·측면 조명이 있어요</b><br>`:'')+(lit?'<b style="color:#b3261e">이마가 가려졌거나 조명이 바뀌었어요</b><br>':'')+(turned?'<b style="color:#b3261e">고개가 돌아갔어요 · 기준 저장 때처럼 정면을 봐 주세요</b><br>':'')+`<span class="dev">세로선 = 기준값 · 판정 강도 ${$('strength').selectedOptions[0].text} · 미흡 ${fails}회 · ${sec}초</span>`;
   $('btnSkip').hidden=!(fails>=3||sec>=60);
 }
 let poseT=0;
@@ -593,7 +612,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v22 · 11-22';
+const VER='v23 · 11-22';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
