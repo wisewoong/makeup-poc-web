@@ -62,17 +62,17 @@ textarea{width:100%;height:120px;font:12px/1.4 ui-monospace,Menlo,monospace;bord
     <label class="t">판정 강도
       <select id="strength"><option value="loose">느슨</option><option value="normal" selected>보통</option><option value="strict">엄격</option></select>
     </label>
-    <label class="t">블러셔 색(룩)
+    <label class="t" hidden>블러셔 색(룩)
       <select id="look"><option value="coral">코랄</option><option value="pink" selected>핑크</option><option value="rose">로즈</option><option value="peach">피치</option></select>
     </label>
     <label class="t"><input type="checkbox" id="tts" checked> 음성 안내</label>
   </div>
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
-  <p class="small" id="loadMsg">v13 · 11-22</p>
+  <p class="small" id="loadMsg">v14 · 11-22</p>
 </div>
 
 <div id="panel" hidden>
-  <div class="steps"><span id="s1"></span><span id="s2"></span><span id="s3"></span></div>
+  <div class="steps"><span id="s0"></span><span id="s1"></span><span id="s2"></span><span id="s3"></span></div>
   <div id="view"></div>
   <div class="row" style="margin-top:6px">
     <label class="t"><input type="checkbox" id="showPts"> 판정 지점 보기</label>
@@ -94,7 +94,9 @@ const TH={ // 판정 강도별 기준값 (관리자 설정값을 흉내 냄)
   strict:{cov:5.0, lDrop:4.0, colTol:20, covMin:.80, symTol:.15, outMax:.12, intMax:12},
 };
 // 룩 블러셔 색 (관리자 룩 프로파일의 blush.color를 흉내 냄)
-const LOOKS={coral:{name:'코랄',hex:'#F4A08C'},pink:{name:'핑크',hex:'#F2A7B8'},rose:{name:'로즈',hex:'#D98A96'},peach:{name:'피치',hex:'#F7B59B'}};
+const LOOKS={coral:{name:'코랄',hex:'#F4A08C',mood:'생기 있고 건강한 느낌'},pink:{name:'핑크',hex:'#F2A7B8',mood:'러블리하고 화사한 느낌'},rose:{name:'로즈',hex:'#D98A96',mood:'차분하고 우아한 느낌'},peach:{name:'피치',hex:'#F7B59B',mood:'맑고 자연스러운 느낌'}};
+const LOOK_ORDER=['pink','coral','rose','peach']; // 다른 룩 추천 순서 (추후 얼굴 분석·상황 기반 추천으로 대체)
+let pvAlpha=.35, pvOrig=false, pvStart=0;
 function lab2rgb(L,a,b){
   let y=(L+16)/116,x=a/500+y,z=y-b/200; const f=t=>t**3>.008856?t**3:(t-16/116)/7.787;
   x=f(x)*.95047;y=f(y);z=f(z)*1.08883;
@@ -282,6 +284,16 @@ function draw(t){
   ctx.clearRect(0,0,cv.width,cv.height);
   if(!lm){return}
   const z=zones();
+  if(step===-1){ // 완성 모습 미리보기: 룩 색 블러셔를 가상으로 입힘
+    if(pvOrig) return;
+    const col=LOOKS[$('look').value].hex, rgb=[1,3,5].map(i=>parseInt(col.slice(i,i+2),16)).join(',');
+    for(const s of [z.left,z.right]){ const e=ellipseOf(s.edge);
+      ctx.save(); ctx.translate(e.x,e.y); ctx.rotate(e.rot); ctx.scale(1,e.b/e.a);
+      const g=ctx.createRadialGradient(0,0,0,0,0,e.a*1.15);
+      g.addColorStop(0,`rgba(${rgb},${pvAlpha})`); g.addColorStop(.55,`rgba(${rgb},${pvAlpha*.7})`); g.addColorStop(1,`rgba(${rgb},0)`);
+      ctx.beginPath(); ctx.arc(0,0,e.a*1.15,0,Math.PI*2); ctx.fillStyle=g; ctx.fill(); ctx.restore(); }
+    return;
+  }
   if(step===0){ // 얼굴 위치 안내용 윤곽
     ctx.strokeStyle='rgba(255,255,255,.7)';ctx.lineWidth=2;
     for(const s of [z.left,z.right]){const e=ellipseOf(s.edge);ctx.beginPath();ctx.ellipse(e.x,e.y,e.a,e.b,e.rot,0,Math.PI*2);ctx.stroke()}
@@ -309,19 +321,31 @@ function draw(t){
 
 // ---------- 화면(패널) ----------
 const view=$('view');
-function stepsBar(){['s1','s2','s3'].forEach((id,i)=>{$(id).className=i<step?'done':i===step?'on':''})}
+function stepsBar(){['s0','s1','s2','s3'].forEach((id,i)=>{$(id).className=i<step+1?'done':i===step+1?'on':''})}
 function meterRow(label,v,mark,txt){return `<span>${label}</span><div class="bar"><i style="width:${Math.max(0,Math.min(100,v*100))}%"></i>${mark!=null?`<s style="left:${mark*100}%"></s>`:''}</div><span class="num">${txt}</span>`}
 function render(){
   stepsBar();
   const th=TH[$('strength').value];
-  if(step===0){
-    view.innerHTML=`<h2>1. 기준 저장 (화장 전)</h2><p>블러셔를 바르기 <b>전</b> 얼굴을 저장합니다. 정면을 보고 잠시 멈춰 주세요.</p>
+  if(step===-1){
+    const k=$('look').value, L=LOOKS[k], i=LOOK_ORDER.indexOf(k);
+    view.innerHTML=`<h2>1. 완성 모습 미리보기</h2>
+      <p><span style="display:inline-block;width:16px;height:16px;border-radius:50%;vertical-align:-2px;background:${L.hex}"></span> <b>${L.name} 블러셔</b> · ${L.mood} <span class="small">(${i+1}/${LOOK_ORDER.length})</span></p>
+      <p class="small">화면의 볼에 완성 모습을 미리 입혀 봤어요. 실제 색은 제품·조명에 따라 조금 달라요.</p>
+      <label class="t" style="margin:6px 0">연하게 <input type="range" id="pvA" min="15" max="60" value="${Math.round(pvAlpha*100)}" style="flex:1"> 진하게</label>
+      <div class="row"><button class="go" id="btnPick">이걸로 할게요</button><button class="pri" id="btnNextLook">다른 룩 추천</button></div>
+      <div class="row"><button id="btnOrig">누르는 동안 원본 보기</button></div>`;
+    $('pvA').oninput=e=>{pvAlpha=e.target.value/100};
+    const o=$('btnOrig'); o.onpointerdown=()=>{pvOrig=true}; o.onpointerup=o.onpointerleave=o.onpointercancel=()=>{pvOrig=false};
+    $('btnNextLook').onclick=()=>{const n=LOOK_ORDER[(i+1)%LOOK_ORDER.length]; $('look').value=n; log.preview.seen.push(n); say(`${LOOKS[n].name} 블러셔예요. ${LOOKS[n].mood}이에요.`); render();};
+    $('btnPick').onclick=()=>{log.preview.chosen=k; log.preview.alpha=pvAlpha; log.preview.sec=Math.round((performance.now()-pvStart)/1000); step=0; say('좋아요. 화장 전 얼굴을 저장할게요. 정면을 보고 잠시 멈춰 주세요.'); render();};
+  } else if(step===0){
+    view.innerHTML=`<h2>2. 기준 저장 (화장 전)</h2><p>블러셔를 바르기 <b>전</b> 얼굴을 저장합니다. 정면을 보고 잠시 멈춰 주세요.</p>
       <div id="chk" class="msg info">얼굴을 찾는 중…</div>
       <div class="row"><button class="pri" id="btnBase" disabled>기준 저장</button></div>`;
     $('btnBase').onclick=captureBaseline;
   } else if(step===1){
     const mk=(id,label,mark)=>`<span>${label}</span><div class="bar"><i id="${id}b"></i><s style="left:${mark*100}%"></s></div><span class="num" id="${id}n">–</span>`;
-    view.innerHTML=`<h2>2. 블러셔 <span style="display:inline-block;width:14px;height:14px;border-radius:50%;vertical-align:-1px;background:${LOOKS[$('look').value].hex}"></span> <span class="small">${LOOKS[$('look').value].name} 룩</span></h2><p>점선 영역 안에 화살표 방향(관자놀이 쪽)으로 펴 발라 주세요. 다 바르면 손을 내리고 <b>다 발랐어요</b>를 누르세요.</p>
+    view.innerHTML=`<h2>3. 블러셔 <span style="display:inline-block;width:14px;height:14px;border-radius:50%;vertical-align:-1px;background:${LOOKS[$('look').value].hex}"></span> <span class="small">${LOOKS[$('look').value].name} 룩</span></h2><p>점선 영역 안에 화살표 방향(관자놀이 쪽)으로 펴 발라 주세요. 다 바르면 손을 내리고 <b>다 발랐어요</b>를 누르세요.</p>
       <div class="meters">${mk('mL','왼쪽 볼',th.covMin)}${mk('mR','오른쪽 볼',th.covMin)}${mk('mS','좌우 차이',th.symTol)}${mk('mO','영역 이탈',th.outMax)}${mk('mC','색 일치',1-th.colTol/90)}</div>
       <div class="small" id="st"></div>
       <div id="res">${lastEval?resultHtml(lastEval):''}</div>
@@ -339,14 +363,14 @@ function render(){
     updateMeters();
   } else {
     const last=log.attempts[log.attempts.length-1];
-    view.innerHTML=`<h2>3. 결과</h2>
+    view.innerHTML=`<h2>4. 결과</h2>
       <div class="msg ${log.result==='DONE'?'ok':'warn'}">${log.result==='DONE'?'블러셔 단계 완료!':'미흡한 상태로 넘어갔어요 (보완 추천 대상)'}</div>
       <p>시도 ${log.attempts.length}회 · 미흡 ${fails}회 · 소요 ${log.durationSec}초</p>
       <p class="small">아래 로그를 복사해서 Claude에게 보내 주세요. 기준값 조정에 씁니다. (얼굴 이미지는 포함되지 않습니다)</p>
       <textarea id="logTxt" readonly>${JSON.stringify(log,null,1)}</textarea>
       <div class="row"><button class="pri" id="btnCopy">로그 복사</button><button id="btnAgain">다시 하기</button></div>`;
     $('btnCopy').onclick=async()=>{try{await navigator.clipboard.writeText($('logTxt').value);$('btnCopy').textContent='복사됨'}catch(e){$('logTxt').select();$('btnCopy').textContent='길게 눌러 복사'}};
-    $('btnAgain').onclick=()=>{step=0;fails=0;lastEval=null;log.attempts=[];delete log.result;render()};
+    $('btnAgain').onclick=()=>{step=-1;pvStart=performance.now();log.preview={seen:[$('look').value]};fails=0;lastEval=null;log.attempts=[];delete log.result;render()};
   }
 }
 function resultHtml(e){
@@ -443,7 +467,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v13 · 11-22';
+const VER='v14 · 11-22';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
@@ -473,7 +497,9 @@ $('btnStart').onclick=async()=>{
     try{landmarker=await withTimeout(FaceLandmarker.createFromOptions(files,opts("GPU")),60000,stage+'(GPU)')}
     catch(e){progress(3,'GPU 모드 실패 → CPU 모드로 다시 시도 중…'); log.gpuError=String(e&&e.message||e); landmarker=await withTimeout(FaceLandmarker.createFromOptions(files,opts("CPU")),60000,stage+'(CPU)')}
     log.delegate=log.gpuError?'CPU':'GPU';
-    clearInterval(ticker); $('start').hidden=true; $('panel').hidden=false; say('정면을 보고 잠시 멈춰 주세요.'); render(); raf=requestAnimationFrame(loop);
+    clearInterval(ticker); $('start').hidden=true; $('panel').hidden=false;
+    step=-1; pvStart=performance.now(); log.preview={seen:[$('look').value]};
+    say('완성 모습을 먼저 보여 드릴게요.'); render(); raf=requestAnimationFrame(loop);
   }catch(e){
     clearInterval(ticker); $('btnStart').disabled=false;
     msg.textContent=(e&&e.name==='NotAllowedError')?'카메라 권한이 거부됐어요. 설정 → Safari → 카메라 → 허용 후 새로고침해 주세요.':`시작하지 못했어요 [${stage}]: `+(e&&(e.name?e.name+' ':'')+(e.message||e));
