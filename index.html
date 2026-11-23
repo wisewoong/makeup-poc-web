@@ -82,7 +82,7 @@ body:not(.dev) .dev{display:none!important}
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
   <div class="row"><button id="btnVideo">영상 파일로 테스트</button><input type="file" id="vidFile" accept="video/*" hidden></div>
   <p class="small">영상 파일: 미리 찍어 둔 '맨얼굴 → 바르기' 셀카 영상을 카메라 대신 사용해요. 휴대폰 안에서만 재생돼요.</p>
-  <p class="small" id="loadMsg">v26 · 11-23</p>
+  <p class="small" id="loadMsg">v27 · 11-23</p>
 </div>
 
 <div id="panel" hidden>
@@ -136,6 +136,14 @@ function lab2rgb(L,a,b){
   const g=c=>255*Math.min(1,Math.max(0,c>.0031308?1.055*c**(1/2.4)-.055:12.92*c)); return [g(R),g(G),g(B)];
 }
 // 피부색에 룩 색을 조금씩 섞을 때 a*b* 변화 방향 (변화량 mag에 해당하는 만큼 섞은 지점 기준 — 섞을수록 방향이 휘기 때문)
+// 3차원(밝기 포함) 기대 변화 방향 (v27): 룩 색이 피부와 색조가 비슷하면(예: 피치) 밝기만 바뀌므로 밝기도 포함. 밝기는 조명 영향이 커서 가중치 WL
+const WL=.6;
+function mixDir3(skin,tgtHex,mag){
+  const s=lab2rgb(...skin), t=[1,3,5].map(i=>parseInt(tgtHex.slice(i,i+2),16)); let last=[0,1,0,1];
+  for(let al=.02;al<=1;al+=.02){const m=rgb2lab(...s.map((v,k)=>v*(1-al)+t[k]*al)); const dL=(m[0]-skin[0])*WL,da=m[1]-skin[1],db=m[2]-skin[2],n=Math.hypot(dL,da,db); if(n>1e-6) last=[dL/n,da/n,db/n,Math.hypot(da,db)/n]; if(n>=mag) break;}
+  return last; // [eL,ea,eb, 색조 비중(0~1)]
+}
+const proj3=(dLv,dav,dbv,e)=>dLv*WL*e[0]+dav*e[1]+dbv*e[2];
 function mixDir(skin,tgtHex,mag){
   const s=lab2rgb(...skin), t=[1,3,5].map(i=>parseInt(tgtHex.slice(i,i+2),16)); let last=[1,0];
   for(let al=.02;al<=1;al+=.02){const m=rgb2lab(...s.map((v,k)=>v*(1-al)+t[k]*al)); const da=m[1]-skin[1],db=m[2]-skin[2],n=Math.hypot(da,db); if(n>1e-6) last=[da/n,db/n]; if(n>=mag) break;}
@@ -272,12 +280,12 @@ function evaluate(cur){
     const bi=baseline[s].inner, ci=cur[s].inner;
     // 기대 색 방향: 이 볼의 원래 피부색 → 룩 색 (a*b* 평면)
     const skin=[0,1,2].map(k=>bi.reduce((t,q)=>t+q[k],0)/bi.length);
-    let [ea,eb]=mixDir(skin,look.hex,8); // 덮임 판정용 방향 (보통 정도 발랐을 때)
+    const e3=mixDir3(skin,look.hex,8); // 덮임 판정용 방향 (보통 정도 발랐을 때, 밝기 포함)
     const da=ci.map((q,i)=>(q[1]-bi[i][1])-light), db=ci.map((q,i)=>(q[2]-bi[i][2])-lightB);
-    // d = 룩 색 쪽으로 바뀐 양 (예전: 붉은 기 a*만 봄 → 색이 달라도 통과)
-    const d=da.map((v,i)=>v*ea+db[i]*eb);
-    const od=cur[s].outer.map((q,i)=>((q[1]-baseline[s].outer[i][1])-light)*ea+((q[2]-baseline[s].outer[i][2])-lightB)*eb);
     const dl=ci.map((q,i)=>(q[0]-bi[i][0])-lightL); // 지점별 밝기 변화 (조명 보정)
+    // d = 룩 색 쪽으로 바뀐 양 (밝기·붉은 기·노란 기 3차원 투영)
+    const d=da.map((v,i)=>proj3(dl[i],v,db[i],e3));
+    const od=cur[s].outer.map((q,i)=>{const o=baseline[s].outer[i];return proj3((q[0]-o[0])-lightL,(q[1]-o[1])-light,(q[2]-o[2])-lightB,e3)});
     // 발림: 룩 색 쪽 변화가 기준 이상이거나, 조금 바뀌면서 밝기가 확실히 떨어짐 (밝은 조명에서 색이 바래 보일 때)
     const covered=d.map((v,i)=>v>=th.cov||(v>=th.cov*.4&&dl[i]<=-th.lDrop));
     const cov=covered.filter(Boolean).length/d.length;
@@ -291,9 +299,10 @@ function evaluate(cur){
     let sa=0,sb=0,n=0; covered.forEach((c,i)=>{if(c){sa+=da[i];sb+=db[i];n++}});
     let colDiff=null; const mag=n?Math.hypot(sa/n,sb/n):0;
     // 어느 정도 발린 뒤에만 색 판단
-    if(cov>=th.covMin*.7&&mag>=th.cov){ const [xa,xb]=mixDir(skin,look.hex,mag); let x=Math.atan2(sb,sa)-Math.atan2(xb,xa); x=Math.atan2(Math.sin(x),Math.cos(x)); colDiff=x*180/Math.PI; }
+    // 룩 색과 피부 색조가 비슷하면(기대 변화의 색조 비중 < .45) 색으로 구분할 근거가 없어 색 판정 생략
+    if(cov>=th.covMin*.7&&mag>=th.cov&&e3[3]>=.45){ const [xa,xb]=mixDir(skin,look.hex,mag); let x=Math.atan2(sb,sa)-Math.atan2(xb,xa); x=Math.atan2(Math.sin(x),Math.cos(x)); colDiff=x*180/Math.PI; }
     const sdl=[...dl].sort((a,b)=>a-b), medDl=sdl[sdl.length>>1];
-    return {cov,inten,out,covered,avgD,dL,d,od,dl,colDiff,medDl,shift:n?[sa/n,sb/n]:[0,0]};
+    return {cov,inten,out,covered,avgD,dL,d,od,dl,colDiff,medDl,abShare:e3[3],shift:n?[sa/n,sb/n]:[0,0]};
   };
   const L=side('left'), R=side('right');
   const symCov=Math.abs(L.cov-R.cov), symInt=Math.min(L.inten,R.inten)/Math.max(L.inten,R.inten,1e-6);
@@ -343,8 +352,8 @@ let lastMap=null;
 function changeMap(cur,e){
   if(!cur.all||!baseline.all) return null;
   const bi=[...baseline.left.inner,...baseline.right.inner], skin=[0,1,2].map(k=>bi.reduce((t,q)=>t+q[k],0)/bi.length);
-  const [ea,eb]=mixDir(skin,LOOKS[$('look').value].hex,8);
-  lastMap=cur.all.map((q,i)=>((q[1]-baseline.all[i][1])-e.light)*ea+((q[2]-baseline.all[i][2])-(e.lightB||0))*eb);
+  const e3=mixDir3(skin,LOOKS[$('look').value].hex,8);
+  lastMap=cur.all.map((q,i)=>{const b=baseline.all[i];return proj3((q[0]-b[0])-(e.lightL||0),(q[1]-b[1])-e.light,(q[2]-b[2])-(e.lightB||0),e3)});
   // 로그: 변화가 큰 랜드마크 번호:값 (상위 30)
   return lastMap.map((v,i)=>[i,v]).filter(([,v])=>v>=3).sort((a,b)=>b[1]-a[1]).slice(0,30).map(([i,v])=>i+':'+Math.round(v)).join(',');
 }
@@ -381,8 +390,8 @@ function synthPaint(g,ox,oy){
   for(const s of ($('synSide').value==='both'?[z.left,z.right]:[z.left])){
     const e=ellipseOf(s.edge), cx=e.x+s.sign*s.ux.x*e.a*off-ox, cy=e.y+s.sign*s.ux.y*e.a*off-oy;
     g.save(); g.translate(cx,cy); g.rotate(e.rot); g.scale(1,e.b/e.a);
-    const R=e.a*1.3, gr=g.createRadialGradient(0,0,0,0,0,R); // 점선(≈R의 77%)까지 고르게, 바깥에서 옅어짐
-    gr.addColorStop(0,`rgba(${rgb},${a})`); gr.addColorStop(.75,`rgba(${rgb},${a})`); gr.addColorStop(1,`rgba(${rgb},0)`);
+    const R=e.a*1.15, gr=g.createRadialGradient(0,0,0,0,0,R); // 점선(≈R의 87%)까지 고르게, 바깥에서 빨리 옅어짐
+    gr.addColorStop(0,`rgba(${rgb},${a})`); gr.addColorStop(.85,`rgba(${rgb},${a})`); gr.addColorStop(1,`rgba(${rgb},0)`);
     g.beginPath(); g.arc(0,0,R,0,Math.PI*2); g.fillStyle=gr; g.fill(); g.restore(); }
 }
 const synLog=()=>synOn()?{side:$('synSide').value,a:+($('synA').value/100).toFixed(2),off:+($('synOff').value/100).toFixed(2)}:undefined;
@@ -540,8 +549,8 @@ function captureBaseline(){
     { // 맨 볼 잡음: 앞 6프레임 평균 vs 뒤 6프레임 평균의 차이 (룩 색 방향) → 판정 때 잡음으로 환산
       const h=BASE_N>>1, A=averageMeasures(baseBuf.slice(0,h)), B=averageMeasures(baseBuf.slice(h));
       const bi=[...baseline.left.inner,...baseline.right.inner], skin=[0,1,2].map(k=>bi.reduce((t,q)=>t+q[k],0)/bi.length);
-      const [ea,eb]=mixDir(skin,LOOKS[$('look').value].hex,8);
-      const diffs=['left','right'].flatMap(sd=>A[sd].inner.map((q,i)=>(q[1]-B[sd].inner[i][1])*ea+(q[2]-B[sd].inner[i][2])*eb));
+      const e3=mixDir3(skin,LOOKS[$('look').value].hex,8);
+      const diffs=['left','right'].flatMap(sd=>A[sd].inner.map((q,i)=>proj3(q[0]-B[sd].inner[i][0],q[1]-B[sd].inner[i][1],q[2]-B[sd].inner[i][2],e3)));
       const rms=Math.sqrt(diffs.reduce((t,v)=>t+v*v,0)/diffs.length), noise=rms*Math.SQRT1_2; // 12프레임 평균끼리 비교할 때의 잡음
       const th=TH[$('strength').value];
       baseline.noise=noise; baseline.covEff=Math.min(th.cov,Math.max(COV_FLOOR,NOISE_K*noise+1));
@@ -555,7 +564,7 @@ function captureBaseline(){
 }
 const r1=v=>Math.round(v*10)/10, r2=v=>Math.round(v*100)/100;
 // 로그용 상세값: 판정 지점별 붉은 기 증가량(d), 밝기 변화(dL), 얼굴 방향(yaw)
-const sideLog=x=>({medDl:Math.round(x.medDl),colDiff:x.colDiff==null?null:Math.round(x.colDiff),shift:x.shift.map(r1),cov:r2(x.cov),int:r1(x.inten),out:r2(x.out),avgD:r1(x.avgD),dL:r1(x.dL),d:x.d.map(v=>Math.round(v)).join(","),od:x.od.map(v=>Math.round(v)).join(","),dl:x.dl.map(v=>Math.round(v)).join(",")});
+const sideLog=x=>({abShare:r2(x.abShare),medDl:Math.round(x.medDl),colDiff:x.colDiff==null?null:Math.round(x.colDiff),shift:x.shift.map(r1),cov:r2(x.cov),int:r1(x.inten),out:r2(x.out),avgD:r1(x.avgD),dL:r1(x.dL),d:x.d.map(v=>Math.round(v)).join(","),od:x.od.map(v=>Math.round(v)).join(","),dl:x.dl.map(v=>Math.round(v)).join(",")});
 function judge(){
   const list=[]; let n=0;
   const take=()=>{const m=measure(true); if(m) list.push(m); if(++n<JUDGE_N) setTimeout(take,70); else {
@@ -651,7 +660,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v26 · 11-23';
+const VER='v27 · 11-23';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
