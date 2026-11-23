@@ -56,6 +56,11 @@ body:not(.dev) .dev{display:none!important}
 </div>
 <div id="top"><b>화장 도우미 PoC · 블러셔</b><span style="display:flex;gap:6px;align-items:center"><span class="chip" id="fps">–</span><button id="devBtn" class="chip" style="min-height:30px;flex:none;border:1px solid rgba(255,255,255,.5);color:#fff;font:600 12px/1 inherit;padding:0 10px">수치 보기</button></span></div>
 
+<div id="vctl" hidden style="position:fixed;left:0;right:0;top:calc(52px + env(safe-area-inset-top));z-index:3;display:flex;gap:8px;align-items:center;padding:6px 12px;background:rgba(0,0,0,.45);color:#fff;font-size:12px">
+  <button id="vPlay" class="chip" style="min-height:30px;flex:none;color:#fff;border:1px solid rgba(255,255,255,.5)">일시정지</button>
+  <input type="range" id="vSeek" min="0" max="1000" value="0" style="flex:1">
+  <span id="vTime" style="font-variant-numeric:tabular-nums">0:00</span>
+</div>
 <div id="start">
   <h1>화장 도우미 PoC</h1>
   <p>블러셔 1단계를 AR로 안내하고, 덜 바르면 다음으로 넘어가지 않는지 검증합니다.</p>
@@ -75,10 +80,20 @@ body:not(.dev) .dev{display:none!important}
     <label class="t"><input type="checkbox" id="tts" checked> 음성 안내</label>
   </div>
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
-  <p class="small" id="loadMsg">v25 · 11-23</p>
+  <div class="row"><button id="btnVideo">영상 파일로 테스트</button><input type="file" id="vidFile" accept="video/*" hidden></div>
+  <p class="small">영상 파일: 미리 찍어 둔 '맨얼굴 → 바르기' 셀카 영상을 카메라 대신 사용해요. 휴대폰 안에서만 재생돼요.</p>
+  <p class="small" id="loadMsg">v26 · 11-23</p>
 </div>
 
 <div id="panel" hidden>
+  <div class="dev" id="synBox" style="margin-bottom:8px;padding:8px 10px;border-radius:12px;background:#fff4f7;font-size:13px">
+    <b>가상 블러셔 (화장 없이 테스트)</b> — 기준 저장 뒤 켜고 '다 발랐어요'
+    <div class="row" style="margin-top:6px;align-items:center">
+      <select id="synSide"><option value="off">끔</option><option value="both">양쪽</option><option value="one">왼쪽 볼만</option></select>
+      <label class="t" style="flex:1">진하기 <input type="range" id="synA" min="0" max="60" value="20" style="flex:1"><span id="synAv">.20</span></label>
+    </div>
+    <label class="t" style="margin-top:4px">위치: 점선 안 <input type="range" id="synOff" min="0" max="120" value="0" style="flex:1"> 귀 쪽</label>
+  </div>
   <div class="steps"><span id="s0"></span><span id="s1"></span><span id="s2"></span><span id="s3"></span></div>
   <div id="view"></div>
   <div class="row" style="margin-top:6px">
@@ -227,6 +242,7 @@ function measure(full){ // full: 얼굴 전체 랜드마크 468곳 색도 측정
   const sw=Math.max(1,Math.min(cv.width,Math.ceil((x1+mx)*cv.width))-sx), sh=Math.max(1,Math.min(cv.height,Math.ceil((y1+my)*cv.height))-sy);
   if(off.width<sw||off.height<sh){off.width=Math.max(off.width,sw);off.height=Math.max(off.height,sh)} // 크기를 매번 바꾸지 않음
   octx.drawImage(video,sx,sy,sw,sh,0,0,sw,sh);
+  synthPaint(octx,sx,sy); // 테스트용 가상 블러셔 (꺼져 있으면 아무것도 안 함)
   const img=octx.getImageData(0,0,sw,sh); img.ox=sx; img.oy=sy;
   const z=zones(), fw=Math.abs(P(FACE_R).x-P(FACE_L).x), r=Math.max(3,fw*.018); // 지점별 측정 면적 (v21: .012→.018, 잡음 감소)
   const m=pts=>pts.map(p=>sampleLab(img,p,r));
@@ -357,6 +373,20 @@ function placeHints(e){
   if(hints.length){ e.issues=[...hints,...e.issues]; e.pass=false; }
 }
 
+// ---------- 가상 블러셔 (테스트용): 측정 이미지와 화면에 룩 색을 칠함 ----------
+const synOn=()=>$('synSide')&&$('synSide').value!=='off'&&step===1;
+function synthPaint(g,ox,oy){
+  if(!synOn()) return; const z=zones(), a=$('synA').value/100, off=$('synOff').value/100;
+  const rgb=[1,3,5].map(i=>parseInt(LOOKS[$('look').value].hex.slice(i,i+2),16)).join(',');
+  for(const s of ($('synSide').value==='both'?[z.left,z.right]:[z.left])){
+    const e=ellipseOf(s.edge), cx=e.x+s.sign*s.ux.x*e.a*off-ox, cy=e.y+s.sign*s.ux.y*e.a*off-oy;
+    g.save(); g.translate(cx,cy); g.rotate(e.rot); g.scale(1,e.b/e.a);
+    const R=e.a*1.3, gr=g.createRadialGradient(0,0,0,0,0,R); // 점선(≈R의 77%)까지 고르게, 바깥에서 옅어짐
+    gr.addColorStop(0,`rgba(${rgb},${a})`); gr.addColorStop(.75,`rgba(${rgb},${a})`); gr.addColorStop(1,`rgba(${rgb},0)`);
+    g.beginPath(); g.arc(0,0,R,0,Math.PI*2); g.fillStyle=gr; g.fill(); g.restore(); }
+}
+const synLog=()=>synOn()?{side:$('synSide').value,a:+($('synA').value/100).toFixed(2),off:+($('synOff').value/100).toFixed(2)}:undefined;
+
 // ---------- 그리기 ----------
 // 화면 떨림 줄이기: 윤곽 점을 이전 프레임과 섞음
 const ema={}; function steady(key,pts,k=.65){const o=ema[key];if(!o||o.length!==pts.length){ema[key]=pts.map(p=>({...p}));return ema[key]}for(let i=0;i<pts.length;i++){o[i].x+=(pts[i].x-o[i].x)*k;o[i].y+=(pts[i].y-o[i].y)*k}return o}
@@ -402,6 +432,7 @@ function draw(t){
     return;
   }
   if(step===1){
+    synthPaint(ctx,0,0);
     const pulse=.22+.12*Math.sin(t/300);
     const bad=new Set((lastEval&&!lastEval.pass)?lastEval.issues.map(i=>i.side):[]);
     for(const s of [z.left,z.right]){
@@ -544,7 +575,7 @@ function judge(){
       say('빛 때문에 색을 정확히 볼 수 없어요. 기준 저장 때와 같은 자세로 다시 눌러 주세요.'); return; }
     placeHints(e); // 점선 밖에 발렸으면 어느 쪽인지 안내
     lastEval=e;
-    log.attempts.push({hot, base:baseNo, t:Math.round((performance.now()-stepStart)/1000), pass:e.pass,
+    log.attempts.push({syn:synLog(), hot, base:baseNo, t:Math.round((performance.now()-stepStart)/1000), pass:e.pass,
       L:sideLog(e.L), R:sideLog(e.R), yaw:r2(avg.yaw), fw:r2(avg.fwRatio), fhL:Math.round(avg.fhL),
       symCov:r2(e.symCov), light:r1(e.light), lightL:r1(e.lightL), lightB:r1(e.lightB||0), issues:e.issues.map(i=>i.k+':'+i.side)});
     if(e.pass){ say('잘 발렸어요. 다음으로 넘어갈까요?'); finishPrompt(); }
@@ -620,28 +651,45 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v25 · 11-23';
+const VER='v26 · 11-23';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
-$('btnStart').onclick=async()=>{
-  const msg=$('loadMsg'); $('btnStart').disabled=true;
+$('btnStart').onclick=()=>startApp(null);
+$('btnVideo').onclick=()=>$('vidFile').click();
+$('vidFile').onchange=e=>{const f=e.target.files&&e.target.files[0]; if(f) startApp(f);};
+let vDrag=false;
+function fmtT(x){x=Math.max(0,x||0);return Math.floor(x/60)+':'+String(Math.floor(x%60)).padStart(2,'0')}
+$('vPlay').onclick=()=>{ if(video.paused){video.play().catch(()=>{});$('vPlay').textContent='일시정지'} else {video.pause();$('vPlay').textContent='재생'} };
+$('vSeek').oninput=e=>{vDrag=true; if(video.duration) video.currentTime=video.duration*e.target.value/1000; $('vTime').textContent=fmtT(video.currentTime)};
+$('vSeek').onchange=()=>{vDrag=false};
+setInterval(()=>{ if($('vctl').hidden||vDrag||!video.duration) return; $('vSeek').value=Math.round(video.currentTime/video.duration*1000); $('vTime').textContent=fmtT(video.currentTime)+' / '+fmtT(video.duration); },250);
+$('synA').oninput=e=>{$('synAv').textContent=(e.target.value/100).toFixed(2)};
+async function startApp(file){
+  const msg=$('loadMsg'); $('btnStart').disabled=true; $('btnVideo').disabled=true;
   if('speechSynthesis' in window&&$('tts').checked){try{speechSynthesis.speak(new SpeechSynthesisUtterance(''))}catch(e){}} // iOS: 버튼 누를 때 음성 잠금 해제
   let stage='카메라 권한';
   try{
     // 1) 카메라를 먼저 연다 (iOS는 버튼을 누른 직후에 요청해야 안정적)
+    let stream=null;
+    if(file){ // 영상 파일 모드: 카메라 대신 저장된 영상 재생 (기기 안에서만)
+      stage='영상 파일 열기'; progress(2,'영상 파일을 여는 중…');
+      video.srcObject=null; video.src=URL.createObjectURL(file); video.loop=true; video.muted=true;
+      log.source={type:'file',name:file.name,sizeMB:+(file.size/1048576).toFixed(1)}; $('vctl').hidden=false;
+    } else {
     if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia) throw new Error('이 브라우저는 카메라를 지원하지 않아요. 사파리로 열어 주세요');
     progress(1,'카메라 권한 요청 중… 팝업이 뜨면 허용을 눌러 주세요');
-    const stream=await withTimeout(navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false}),20000,stage);
+    stream=await withTimeout(navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false}),20000,stage);
     stage='카메라 화면 재생'; progress(2,'카메라 화면을 켜는 중…');
-    video.srcObject=stream;
+    video.srcObject=stream; log.source={type:'camera'};
+    }
     video.play().catch(()=>{}); // iOS에서 play()가 끝나지 않는 경우가 있어 기다리지 않음
     let ok=await waitVideo(3000);
     if(!ok){ // 자동 재생이 막힌 경우: 화면을 한 번 누르면 재생
       progress(2,'카메라 화면이 안 켜졌어요. 화면 아무 곳이나 한 번 눌러 주세요');
       const tap=()=>video.play().catch(()=>{}); document.addEventListener('click',tap); document.addEventListener('touchend',tap);
       ok=await waitVideo(20000); document.removeEventListener('click',tap); document.removeEventListener('touchend',tap);
-      if(!ok) throw new Error(`카메라 영상이 들어오지 않아요 (readyState=${video.readyState}, paused=${video.paused}, 트랙=${stream.getVideoTracks().map(t=>t.readyState).join(',')})`);
+      if(!ok) throw new Error(`영상이 들어오지 않아요 (readyState=${video.readyState}, paused=${video.paused}, 트랙=${stream?stream.getVideoTracks().map(t=>t.readyState).join(','):'파일'})`);
     }
     // 2) 얼굴 인식 모델
     stage='얼굴 인식 모델 불러오기'; progress(3,'얼굴 인식 모델을 불러오는 중… (처음 1회 수 초~수십 초)');
@@ -654,7 +702,7 @@ $('btnStart').onclick=async()=>{
     step=-1; pvStart=performance.now(); log.preview={seen:[$('look').value]};
     say('완성 모습을 먼저 보여 드릴게요.'); render(); raf=requestAnimationFrame(loop);
   }catch(e){
-    clearInterval(ticker); $('btnStart').disabled=false;
+    clearInterval(ticker); $('btnStart').disabled=false; $('btnVideo').disabled=false;
     msg.textContent=(e&&e.name==='NotAllowedError')?'카메라 권한이 거부됐어요. 설정 → Safari → 카메라 → 허용 후 새로고침해 주세요.':`시작하지 못했어요 [${stage}]: `+(e&&(e.name?e.name+' ':'')+(e.message||e));
   }
 };
