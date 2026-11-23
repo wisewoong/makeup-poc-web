@@ -82,7 +82,7 @@ body:not(.dev) .dev{display:none!important}
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
   <div class="row"><button id="btnVideo">영상 파일로 테스트</button><input type="file" id="vidFile" accept="video/*" hidden></div>
   <p class="small">영상 파일: 미리 찍어 둔 '맨얼굴 → 바르기' 셀카 영상을 카메라 대신 사용해요. 휴대폰 안에서만 재생돼요.</p>
-  <p class="small" id="loadMsg">v29 · 11-23</p>
+  <p class="small" id="loadMsg">v30 · 11-23</p>
 </div>
 
 <div id="panel" hidden>
@@ -138,6 +138,7 @@ function lab2rgb(L,a,b){
 // 피부색에 룩 색을 조금씩 섞을 때 a*b* 변화 방향 (변화량 mag에 해당하는 만큼 섞은 지점 기준 — 섞을수록 방향이 휘기 때문)
 // 3차원(밝기 포함) 기대 변화 방향 (v27): 룩 색이 피부와 색조가 비슷하면(예: 피치) 밝기만 바뀌므로 밝기도 포함. 밝기는 조명 영향이 커서 가중치 WL
 const WL=.6;
+const COL_REF=4; // 색 변화량이 이보다 작으면 색 허용 각도를 비례해 넓힘 (v30: 핑크 .1에서 각도 -12~-29°로 흔들림)
 const AB_MIN=.8; // 기대 변화의 색조 비중이 이보다 작으면 색 판정 생략 (v28: .45→.8, 피치에 피치를 칠해도 -40° 오판)
 function mixDir3(skin,tgtHex,mag){
   const s=lab2rgb(...skin), t=[1,3,5].map(i=>parseInt(tgtHex.slice(i,i+2),16)); let last=[0,1,0,1];
@@ -324,7 +325,7 @@ function evaluate(cur){
     const [lo,hi]=(AMT_RANGE[$('strength').value]||AMT_RANGE.normal).map(k=>k*(baseline.pvA??pvAlpha));
     if(s.amt>hi) issues.push({k:'int',side:n,t:`${n}이 미리보기보다 너무 진해요. 깨끗한 퍼프로 두드려 덜어내세요`});
     else if(s.cov>=th.covMin&&s.amt<lo) issues.push({k:'weak',side:n,t:`${n}이 미리보기보다 연해요. 조금 더 진하게 발라 주세요`});
-    if(s.colDiff!=null&&Math.abs(s.colDiff)>th.colTol) issues.push({k:'col',side:n,t:`${n} 색이 ${look.name} 룩보다 ${s.colDiff>0?'주황빛(노란 기)':'핑크빛(푸른 기)'}이 강해요. ${look.name} 색에 가까운 제품으로 덧발라 주세요`});
+    if(s.colDiff!=null&&Math.abs(s.colDiff)>th.colTol*Math.max(1,COL_REF/Math.max(1e-6,Math.hypot(...s.shift)))) issues.push({k:'col',side:n,t:`${n} 색이 ${look.name} 룩보다 ${s.colDiff>0?'주황빛(노란 기)':'핑크빛(푸른 기)'}이 강해요. ${look.name} 색에 가까운 제품으로 덧발라 주세요`});
   }
   if(L.cov>=th.covMin*.8&&R.cov>=th.covMin*.8&&(symCov>th.symTol||symInt<.6)){
     const weak=(L.cov+L.inten/20)<(R.cov+R.inten/20)?'왼쪽 볼':'오른쪽 볼';
@@ -674,7 +675,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v29 · 11-23';
+const VER='v30 · 11-23';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
