@@ -82,7 +82,7 @@ body:not(.dev) .dev{display:none!important}
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
   <div class="row"><button id="btnVideo">영상 파일로 테스트</button><input type="file" id="vidFile" accept="video/*" hidden></div>
   <p class="small">영상 파일: 미리 찍어 둔 '맨얼굴 → 바르기' 셀카 영상을 카메라 대신 사용해요. 휴대폰 안에서만 재생돼요.</p>
-  <p class="small" id="loadMsg">v28 · 11-23</p>
+  <p class="small" id="loadMsg">v29 · 11-23</p>
 </div>
 
 <div id="panel" hidden>
@@ -200,6 +200,15 @@ const BASE_N=12, JUDGE_N=12; // 기준 저장·판정 때 평균 내는 프레�
 const NOISE_K=2.5, COV_FLOOR=1.5; // v28: 1.8→1.5 (실기기 맨 볼 잡음 .12~.34, 가상 .2가 경계에 걸림) // '바름' 기준 = 잡음×2.5 + 1 (최소 1.8, 최대 판정 강도 기준값)
 // 목표 진하기: 미리보기 슬라이더(.15~.60) → '너무 진해요' 상한. 실기기: 적당히 ≈5, 진하게 7~11
 const intMaxFor=(alpha,strength)=>{const t=Math.min(1,Math.max(0,(alpha-.15)/.45)); return 7+10*t+({loose:3,normal:0,strict:-2}[strength]||0)};
+// 바른 양 환산 (v29): 측정 진하기(3차원 변화량)를 '피부에 룩 색을 몇 % 섞은 것'으로 환산 → 색과 무관한 기준.
+// 실측 검증: 핑크 .1/.2/.4 → 예상 2.1/4.3/8.5 · 실측 2.3/4.0/8.0, 피치 .1/.2/.41 → 0.9/1.8/3.7 · 1.0/2.2/3.4
+function amountOf(skin,hex,val){
+  const s=lab2rgb(...skin), t=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16));
+  for(let al=.01;al<=1.5;al+=.01){const m=rgb2lab(...s.map((v,k)=>Math.min(255,v*(1-al)+t[k]*al))); if(Math.hypot((m[0]-skin[0])*WL,m[1]-skin[1],m[2]-skin[2])>=val) return al;}
+  return 1.5;
+}
+// 목표 범위 = 미리보기 진하기 × [LO, HI] (판정 강도별)
+const AMT_RANGE={loose:[.4,2.2],normal:[.5,1.8],strict:[.65,1.5]};
 const levelName=a=>a<.24?'연하게':a<.40?'보통':'진하게';
 const N_DIR=12; // 판정 방향 수 (고정): 볼 중심에서 12방향 × INNER_T 4지점 + 바깥 12지점
 // 중심 c에서 방향 d로 쏜 반직선이 볼록 껍질 h와 만나는 거리
@@ -303,7 +312,8 @@ function evaluate(cur){
     // 룩 색과 피부 색조가 비슷하면(기대 변화의 색조 비중 < .45) 색으로 구분할 근거가 없어 색 판정 생략
     if(cov>=th.covMin*.7&&mag>=th.cov&&e3[3]>=AB_MIN){ const [xa,xb]=mixDir(skin,look.hex,mag); let x=Math.atan2(sb,sa)-Math.atan2(xb,xa); x=Math.atan2(Math.sin(x),Math.cos(x)); colDiff=x*180/Math.PI; }
     const sdl=[...dl].sort((a,b)=>a-b), medDl=sdl[sdl.length>>1];
-    return {cov,inten,out,covered,avgD,dL,d,od,dl,colDiff,medDl,abShare:e3[3],shift:n?[sa/n,sb/n]:[0,0]};
+    const amt=inten>0?amountOf(skin,look.hex,inten):0;
+    return {cov,inten,amt,out,covered,avgD,dL,d,od,dl,colDiff,medDl,abShare:e3[3],shift:n?[sa/n,sb/n]:[0,0]};
   };
   const L=side('left'), R=side('right');
   const symCov=Math.abs(L.cov-R.cov), symInt=Math.min(L.inten,R.inten)/Math.max(L.inten,R.inten,1e-6);
@@ -311,7 +321,9 @@ function evaluate(cur){
   for(const [n,s] of [['왼쪽 볼',L],['오른쪽 볼',R]]){
     if(s.cov<th.covMin) issues.push({k:'cov',side:n,t:`${n}에 덜 발린 부분이 있어요 (${Math.round(s.cov*100)}%)`});
     if(s.out>th.outMax&&s.cov>=th.covMin*.5) issues.push({k:'out',side:n,t:`${n} 블러셔가 영역 밖으로 나갔어요. 경계를 블렌딩하세요`});
-    if(s.inten>th.intMax) issues.push({k:'int',side:n,t:`${n}이 너무 진해요. 깨끗한 퍼프로 두드려 덜어내세요`});
+    const [lo,hi]=(AMT_RANGE[$('strength').value]||AMT_RANGE.normal).map(k=>k*(baseline.pvA??pvAlpha));
+    if(s.amt>hi) issues.push({k:'int',side:n,t:`${n}이 미리보기보다 너무 진해요. 깨끗한 퍼프로 두드려 덜어내세요`});
+    else if(s.cov>=th.covMin&&s.amt<lo) issues.push({k:'weak',side:n,t:`${n}이 미리보기보다 연해요. 조금 더 진하게 발라 주세요`});
     if(s.colDiff!=null&&Math.abs(s.colDiff)>th.colTol) issues.push({k:'col',side:n,t:`${n} 색이 ${look.name} 룩보다 ${s.colDiff>0?'주황빛(노란 기)':'핑크빛(푸른 기)'}이 강해요. ${look.name} 색에 가까운 제품으로 덧발라 주세요`});
   }
   if(L.cov>=th.covMin*.8&&R.cov>=th.covMin*.8&&(symCov>th.symTol||symInt<.6)){
@@ -555,7 +567,8 @@ function captureBaseline(){
       const rms=Math.sqrt(diffs.reduce((t,v)=>t+v*v,0)/diffs.length), noise=rms*Math.SQRT1_2; // 12프레임 평균끼리 비교할 때의 잡음
       const th=TH[$('strength').value];
       baseline.noise=noise; baseline.covEff=Math.min(th.cov,Math.max(COV_FLOOR,NOISE_K*noise+1));
-      baseline.intMax=intMaxFor(pvAlpha,$('strength').value);
+      baseline.intMax=intMaxFor(pvAlpha,$('strength').value); baseline.pvA=pvAlpha;
+      log.amtRange=(AMT_RANGE[$('strength').value]||AMT_RANGE.normal).map(k=>+(k*pvAlpha).toFixed(2));
       log.noise=+noise.toFixed(2); log.covEff=+baseline.covEff.toFixed(2); log.intMax=+baseline.intMax.toFixed(1); log.target=levelName(pvAlpha);
     } step=1; fails=0; lastEval=null; stepStart=performance.now();
     log.strength=$('strength').value; log.look=$('look').value; log.lookHex=LOOKS[$('look').value].hex; log.baseFhL=Math.round(baseBuf[0].fhL); log.ver=VER;
@@ -565,7 +578,7 @@ function captureBaseline(){
 }
 const r1=v=>Math.round(v*10)/10, r2=v=>Math.round(v*100)/100;
 // 로그용 상세값: 판정 지점별 붉은 기 증가량(d), 밝기 변화(dL), 얼굴 방향(yaw)
-const sideLog=x=>({abShare:r2(x.abShare),medDl:Math.round(x.medDl),colDiff:x.colDiff==null?null:Math.round(x.colDiff),shift:x.shift.map(r1),cov:r2(x.cov),int:r1(x.inten),out:r2(x.out),avgD:r1(x.avgD),dL:r1(x.dL),d:x.d.map(v=>Math.round(v)).join(","),od:x.od.map(v=>Math.round(v)).join(","),dl:x.dl.map(v=>Math.round(v)).join(",")});
+const sideLog=x=>({amt:r2(x.amt),abShare:r2(x.abShare),medDl:Math.round(x.medDl),colDiff:x.colDiff==null?null:Math.round(x.colDiff),shift:x.shift.map(r1),cov:r2(x.cov),int:r1(x.inten),out:r2(x.out),avgD:r1(x.avgD),dL:r1(x.dL),d:x.d.map(v=>Math.round(v)).join(","),od:x.od.map(v=>Math.round(v)).join(","),dl:x.dl.map(v=>Math.round(v)).join(",")});
 function judge(){
   const list=[]; let n=0;
   const take=()=>{const m=measure(true); if(m) list.push(m); if(++n<JUDGE_N) setTimeout(take,70); else {
@@ -661,7 +674,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v28 · 11-23';
+const VER='v29 · 11-23';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
