@@ -82,7 +82,7 @@ body:not(.dev) .dev{display:none!important}
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
   <div class="row"><button id="btnVideo">영상 파일로 테스트</button><input type="file" id="vidFile" accept="video/*" hidden></div>
   <p class="small">영상 파일: 미리 찍어 둔 '맨얼굴 → 바르기' 셀카 영상을 카메라 대신 사용해요. 휴대폰 안에서만 재생돼요.</p>
-  <p class="small" id="loadMsg">v27 · 11-23</p>
+  <p class="small" id="loadMsg">v28 · 11-23</p>
 </div>
 
 <div id="panel" hidden>
@@ -138,6 +138,7 @@ function lab2rgb(L,a,b){
 // 피부색에 룩 색을 조금씩 섞을 때 a*b* 변화 방향 (변화량 mag에 해당하는 만큼 섞은 지점 기준 — 섞을수록 방향이 휘기 때문)
 // 3차원(밝기 포함) 기대 변화 방향 (v27): 룩 색이 피부와 색조가 비슷하면(예: 피치) 밝기만 바뀌므로 밝기도 포함. 밝기는 조명 영향이 커서 가중치 WL
 const WL=.6;
+const AB_MIN=.8; // 기대 변화의 색조 비중이 이보다 작으면 색 판정 생략 (v28: .45→.8, 피치에 피치를 칠해도 -40° 오판)
 function mixDir3(skin,tgtHex,mag){
   const s=lab2rgb(...skin), t=[1,3,5].map(i=>parseInt(tgtHex.slice(i,i+2),16)); let last=[0,1,0,1];
   for(let al=.02;al<=1;al+=.02){const m=rgb2lab(...s.map((v,k)=>v*(1-al)+t[k]*al)); const dL=(m[0]-skin[0])*WL,da=m[1]-skin[1],db=m[2]-skin[2],n=Math.hypot(dL,da,db); if(n>1e-6) last=[dL/n,da/n,db/n,Math.hypot(da,db)/n]; if(n>=mag) break;}
@@ -196,7 +197,7 @@ const LIGHT_HOLD={L:12, ab:6}; // 이마 밝기·색이 기준 저장 때보다 
 const GLOBAL_CORR=true; // 조명 보정: 이마만(false) / 얼굴 전체 중앙값(true, v25 — 이마 보정만으로는 조명 변화가 볼 전체 +2로 남아 오판)
 const LIVE_N=8; let liveBuf=[]; // 실시간 막대: 최근 8번(약 2초) 측정 평균 (v22: 1장만 써서 가만히 있어도 출렁임)
 const BASE_N=12, JUDGE_N=12; // 기준 저장·판정 때 평균 내는 프레임 수 (v21: 6·4 → 12·12)
-const NOISE_K=2.5, COV_FLOOR=1.8; // '바름' 기준 = 잡음×2.5 + 1 (최소 1.8, 최대 판정 강도 기준값)
+const NOISE_K=2.5, COV_FLOOR=1.5; // v28: 1.8→1.5 (실기기 맨 볼 잡음 .12~.34, 가상 .2가 경계에 걸림) // '바름' 기준 = 잡음×2.5 + 1 (최소 1.8, 최대 판정 강도 기준값)
 // 목표 진하기: 미리보기 슬라이더(.15~.60) → '너무 진해요' 상한. 실기기: 적당히 ≈5, 진하게 7~11
 const intMaxFor=(alpha,strength)=>{const t=Math.min(1,Math.max(0,(alpha-.15)/.45)); return 7+10*t+({loose:3,normal:0,strict:-2}[strength]||0)};
 const levelName=a=>a<.24?'연하게':a<.40?'보통':'진하게';
@@ -300,7 +301,7 @@ function evaluate(cur){
     let colDiff=null; const mag=n?Math.hypot(sa/n,sb/n):0;
     // 어느 정도 발린 뒤에만 색 판단
     // 룩 색과 피부 색조가 비슷하면(기대 변화의 색조 비중 < .45) 색으로 구분할 근거가 없어 색 판정 생략
-    if(cov>=th.covMin*.7&&mag>=th.cov&&e3[3]>=.45){ const [xa,xb]=mixDir(skin,look.hex,mag); let x=Math.atan2(sb,sa)-Math.atan2(xb,xa); x=Math.atan2(Math.sin(x),Math.cos(x)); colDiff=x*180/Math.PI; }
+    if(cov>=th.covMin*.7&&mag>=th.cov&&e3[3]>=AB_MIN){ const [xa,xb]=mixDir(skin,look.hex,mag); let x=Math.atan2(sb,sa)-Math.atan2(xb,xa); x=Math.atan2(Math.sin(x),Math.cos(x)); colDiff=x*180/Math.PI; }
     const sdl=[...dl].sort((a,b)=>a-b), medDl=sdl[sdl.length>>1];
     return {cov,inten,out,covered,avgD,dL,d,od,dl,colDiff,medDl,abShare:e3[3],shift:n?[sa/n,sb/n]:[0,0]};
   };
@@ -309,7 +310,7 @@ function evaluate(cur){
   const issues=[];
   for(const [n,s] of [['왼쪽 볼',L],['오른쪽 볼',R]]){
     if(s.cov<th.covMin) issues.push({k:'cov',side:n,t:`${n}에 덜 발린 부분이 있어요 (${Math.round(s.cov*100)}%)`});
-    if(s.out>th.outMax) issues.push({k:'out',side:n,t:`${n} 블러셔가 영역 밖으로 나갔어요. 경계를 블렌딩하세요`});
+    if(s.out>th.outMax&&s.cov>=th.covMin*.5) issues.push({k:'out',side:n,t:`${n} 블러셔가 영역 밖으로 나갔어요. 경계를 블렌딩하세요`});
     if(s.inten>th.intMax) issues.push({k:'int',side:n,t:`${n}이 너무 진해요. 깨끗한 퍼프로 두드려 덜어내세요`});
     if(s.colDiff!=null&&Math.abs(s.colDiff)>th.colTol) issues.push({k:'col',side:n,t:`${n} 색이 ${look.name} 룩보다 ${s.colDiff>0?'주황빛(노란 기)':'핑크빛(푸른 기)'}이 강해요. ${look.name} 색에 가까운 제품으로 덧발라 주세요`});
   }
@@ -660,7 +661,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v27 · 11-23';
+const VER='v28 · 11-23';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
