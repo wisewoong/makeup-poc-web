@@ -83,7 +83,7 @@ body:not(.dev) .dev{display:none!important}
   <div class="row"><button id="btnPC">퍼스널컬러 측정 (흰 종이 준비)</button></div>
   <div class="row"><button id="btnVideo">영상 파일로 테스트</button><input type="file" id="vidFile" accept="video/*" hidden></div>
   <p class="small">영상 파일: 미리 찍어 둔 '맨얼굴 → 바르기' 셀카 영상을 카메라 대신 사용해요. 휴대폰 안에서만 재생돼요.</p>
-  <p class="small" id="loadMsg">v32 · 11-25</p>
+  <p class="small" id="loadMsg">v33 · 11-25</p>
 </div>
 
 <div id="panel" hidden>
@@ -198,7 +198,8 @@ const trimAt=th=>1-ZONE_TRIM.amt*Math.max(0,Math.cos(th-ZONE_TRIM.dir*Math.PI/18
 const LIGHT_HOLD={L:12, ab:6}; // 이마 밝기·색이 기준 저장 때보다 이만큼 바뀌면 판정 보류 (가림·조명 변화)
 const GLOBAL_CORR=true; // 조명 보정: 이마만(false) / 얼굴 전체 중앙값(true, v25 — 이마 보정만으로는 조명 변화가 볼 전체 +2로 남아 오판)
 const LIVE_N=8; let liveBuf=[]; // 실시간 막대: 최근 8번(약 2초) 측정 평균 (v22: 1장만 써서 가만히 있어도 출렁임)
-const MIN_VIDEO_SIDE=480; // 영상 파일 최소 해상도(짧은 변)
+const MIN_VIDEO_SIDE=480;
+const isFile=()=>!!(log.source&&log.source.type==='file'); // 영상 파일 최소 해상도(짧은 변)
 const BASE_N=12, JUDGE_N=12; // 기준 저장·판정 때 평균 내는 프레임 수 (v21: 6·4 → 12·12)
 const NOISE_K=2.5, COV_FLOOR=1.5; // v28: 1.8→1.5 (실기기 맨 볼 잡음 .12~.34, 가상 .2가 경계에 걸림) // '바름' 기준 = 잡음×2.5 + 1 (최소 1.8, 최대 판정 강도 기준값)
 // 목표 진하기: 미리보기 슬라이더(.15~.60) → '너무 진해요' 상한. 실기기: 적당히 ≈5, 진하게 7~11
@@ -725,6 +726,7 @@ function captureBaseline(){
       log.amtRange=(AMT_RANGE[$('strength').value]||AMT_RANGE.normal).map(k=>+(k*pvAlpha).toFixed(2));
       log.noise=+noise.toFixed(2); log.covEff=+baseline.covEff.toFixed(2); log.intMax=+baseline.intMax.toFixed(1); log.target=levelName(pvAlpha);
     } step=1; fails=0; lastEval=null; stepStart=performance.now();
+    if(isFile()){ baseline.vt=video.currentTime; log.baseVT=+video.currentTime.toFixed(1); }
     log.strength=$('strength').value; log.look=$('look').value; log.lookHex=LOOKS[$('look').value].hex; log.baseFhL=Math.round(baseBuf[0].fhL); log.ver=VER;
     log.video=`${video.videoWidth}x${video.videoHeight}`; log.baseYaw=r2(baseline.yaw); log.baseFw=r2(baseline.fwRatio);
     say('블러셔 단계입니다. 점선 영역 안에 화살표 방향으로 펴 발라 주세요.'); render();}};
@@ -737,6 +739,8 @@ function judge(){
   const list=[]; let n=0;
   const take=()=>{const m=measure(true); if(m) list.push(m); if(++n<JUDGE_N) setTimeout(take,70); else {
     if(list.length<2){ $('res').innerHTML='<div class="msg warn">얼굴이 잘 안 보여요. 손을 내리고 정면을 본 뒤 다시 눌러 주세요.</div>'; say('얼굴이 잘 안 보여요. 정면을 봐 주세요.'); return; }
+    if(isFile()&&baseline.vt!=null&&Math.abs(video.currentTime-baseline.vt)<1){ // 영상 파일: 기준 저장과 같은 장면에서 판정 (v33)
+      $('res').innerHTML='<div class="msg warn">기준을 저장한 장면과 같은 장면이에요. 위쪽 막대로 <b>바른 뒤 장면</b>으로 옮긴 다음 눌러 주세요.</div>'; return; }
     const avg=averageMeasures(list);
     const lightOff=Math.abs(avg.fhL-baseline.fhL)>LIGHT_HOLD.L||Math.hypot(avg.fhA-baseline.fhA,(avg.fhB||0)-(baseline.fhB||0))>LIGHT_HOLD.ab;
     if(lightOff){ log.lightHolds=(log.lightHolds||0)+1; $('res').innerHTML='<div class="msg warn">이마가 가려졌거나 조명이 바뀌었어요. 머리카락·손이 이마를 가리지 않게 하고, 기준 저장 때와 같은 자리에서 다시 눌러 주세요. (판정 보류)</div>'; say('이마가 보이게 하고 다시 눌러 주세요.'); return; }
@@ -752,7 +756,7 @@ function judge(){
       say('빛 때문에 색을 정확히 볼 수 없어요. 기준 저장 때와 같은 자세로 다시 눌러 주세요.'); return; }
     placeHints(e); // 점선 밖에 발렸으면 어느 쪽인지 안내
     lastEval=e;
-    log.attempts.push({syn:synLog(), hot, base:baseNo, t:Math.round((performance.now()-stepStart)/1000), pass:e.pass,
+    log.attempts.push({vt:isFile()?+video.currentTime.toFixed(1):undefined, syn:synLog(), hot, base:baseNo, t:Math.round((performance.now()-stepStart)/1000), pass:e.pass,
       L:sideLog(e.L), R:sideLog(e.R), yaw:r2(avg.yaw), fw:r2(avg.fwRatio), fhL:Math.round(avg.fhL),
       symCov:r2(e.symCov), light:r1(e.light), lightL:r1(e.lightL), lightB:r1(e.lightB||0), issues:e.issues.map(i=>i.k+':'+i.side)});
     if(e.pass){ say('잘 발렸어요. 다음으로 넘어갈까요?'); finishPrompt(); }
@@ -829,7 +833,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v32 · 11-25';
+const VER='v33 · 11-25';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
@@ -842,6 +846,7 @@ function fmtT(x){x=Math.max(0,x||0);return Math.floor(x/60)+':'+String(Math.floo
 $('vPlay').onclick=()=>{ if(video.paused){video.play().catch(()=>{});$('vPlay').textContent='일시정지'} else {video.pause();$('vPlay').textContent='재생'} };
 $('vSeek').oninput=e=>{vDrag=true; if(video.duration) video.currentTime=video.duration*e.target.value/1000; $('vTime').textContent=fmtT(video.currentTime)};
 $('vSeek').onchange=()=>{vDrag=false};
+video.addEventListener('seeked',()=>{ if(isFile()&&video.paused){ video.play().then(()=>video.pause()).catch(()=>{}); } }); // iOS: 멈춘 영상은 이동 후 새 장면이 그려지지 않는 경우가 있어 잠깐 재생
 setInterval(()=>{ if($('vctl').hidden||vDrag||!video.duration) return; $('vSeek').value=Math.round(video.currentTime/video.duration*1000); $('vTime').textContent=fmtT(video.currentTime)+' / '+fmtT(video.duration); },250);
 $('synA').oninput=e=>{$('synAv').textContent=(e.target.value/100).toFixed(2)};
 async function startApp(file,mode){
