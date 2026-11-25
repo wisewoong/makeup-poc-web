@@ -83,7 +83,7 @@ body:not(.dev) .dev{display:none!important}
   <div class="row"><button id="btnPC">퍼스널컬러 측정 (흰 종이 준비)</button></div>
   <div class="row"><button id="btnVideo">영상 파일로 테스트</button><input type="file" id="vidFile" accept="video/*" hidden></div>
   <p class="small">영상 파일: 미리 찍어 둔 '맨얼굴 → 바르기' 셀카 영상을 카메라 대신 사용해요. 휴대폰 안에서만 재생돼요.</p>
-  <p class="small" id="loadMsg">v31 · 11-25</p>
+  <p class="small" id="loadMsg">v32 · 11-25</p>
 </div>
 
 <div id="panel" hidden>
@@ -198,6 +198,7 @@ const trimAt=th=>1-ZONE_TRIM.amt*Math.max(0,Math.cos(th-ZONE_TRIM.dir*Math.PI/18
 const LIGHT_HOLD={L:12, ab:6}; // 이마 밝기·색이 기준 저장 때보다 이만큼 바뀌면 판정 보류 (가림·조명 변화)
 const GLOBAL_CORR=true; // 조명 보정: 이마만(false) / 얼굴 전체 중앙값(true, v25 — 이마 보정만으로는 조명 변화가 볼 전체 +2로 남아 오판)
 const LIVE_N=8; let liveBuf=[]; // 실시간 막대: 최근 8번(약 2초) 측정 평균 (v22: 1장만 써서 가만히 있어도 출렁임)
+const MIN_VIDEO_SIDE=480; // 영상 파일 최소 해상도(짧은 변)
 const BASE_N=12, JUDGE_N=12; // 기준 저장·판정 때 평균 내는 프레임 수 (v21: 6·4 → 12·12)
 const NOISE_K=2.5, COV_FLOOR=1.5; // v28: 1.8→1.5 (실기기 맨 볼 잡음 .12~.34, 가상 .2가 경계에 걸림) // '바름' 기준 = 잡음×2.5 + 1 (최소 1.8, 최대 판정 강도 기준값)
 // 목표 진하기: 미리보기 슬라이더(.15~.60) → '너무 진해요' 상한. 실기기: 적당히 ≈5, 진하게 7~11
@@ -828,7 +829,7 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v31 · 11-25';
+const VER='v32 · 11-25';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
@@ -868,6 +869,10 @@ async function startApp(file,mode){
       const tap=()=>video.play().catch(()=>{}); document.addEventListener('click',tap); document.addEventListener('touchend',tap);
       ok=await waitVideo(20000); document.removeEventListener('click',tap); document.removeEventListener('touchend',tap);
       if(!ok) throw new Error(`영상이 들어오지 않아요 (readyState=${video.readyState}, paused=${video.paused}, 트랙=${stream?stream.getVideoTracks().map(t=>t.readyState).join(','):'파일'})`);
+    }
+    if(file&&Math.min(video.videoWidth,video.videoHeight)<MIN_VIDEO_SIDE){ // 사진 앱이 줄인 사본을 넘긴 경우 (v32: 128×224로 들어와 색 판정 불가)
+      log.lowRes=`${video.videoWidth}x${video.videoHeight}`;
+      throw new Error(`영상 화질이 너무 낮아요 (${video.videoWidth}×${video.videoHeight}). 원본 화질로 다시 골라 주세요 — 영상 고를 때 위쪽 '옵션'에서 '현재(원본)'를 고르거나, 영상을 '파일' 앱에 저장한 뒤 '찾아보기'에서 선택해 주세요`);
     }
     // 2) 얼굴 인식 모델
     stage='얼굴 인식 모델 불러오기'; progress(3,'얼굴 인식 모델을 불러오는 중… (처음 1회 수 초~수십 초)');
