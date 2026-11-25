@@ -80,9 +80,10 @@ body:not(.dev) .dev{display:none!important}
     <label class="t"><input type="checkbox" id="tts" checked> 음성 안내</label>
   </div>
   <div class="row"><button class="pri" id="btnStart">카메라 시작</button></div>
+  <div class="row"><button id="btnPC">퍼스널컬러 측정 (흰 종이 준비)</button></div>
   <div class="row"><button id="btnVideo">영상 파일로 테스트</button><input type="file" id="vidFile" accept="video/*" hidden></div>
   <p class="small">영상 파일: 미리 찍어 둔 '맨얼굴 → 바르기' 셀카 영상을 카메라 대신 사용해요. 휴대폰 안에서만 재생돼요.</p>
-  <p class="small" id="loadMsg">v30 · 11-23</p>
+  <p class="small" id="loadMsg">v31 · 11-25</p>
 </div>
 
 <div id="panel" hidden>
@@ -349,12 +350,13 @@ function finishTone(){
   const sd=Math.sqrt(toneBuf.reduce((s,q)=>s+(Math.atan2(q.b,q.a)*180/Math.PI-h)**2,0)/toneBuf.length);
   const fhL=avg('fhL'), lightOk=fhL>=45&&fhL<=85, margin=Math.min(Math.abs(h-TONE_TH.warmH),Math.abs(h-TONE_TH.coolH));
   const conf=!lightOk||sd>4?'낮음':(temp==='neutral'||margin<3)?'보통':'높음';
-  LOOK_ORDER=TONE_ORDER[temp+'_'+depth];
-  tone={temp,depth,L:+L.toFixed(1),a:+a.toFixed(1),b:+b.toFixed(1),h:+h.toFixed(1),sd:+sd.toFixed(1),fhL:Math.round(fhL),conf,order:LOOK_ORDER.join(',')};
+  const pcS=pcSaved(); LOOK_ORDER=pcS?PC_ORDER[pcS.season]:TONE_ORDER[temp+'_'+depth];
+  tone={pcSeason:pcS&&pcS.season,pcSub:pcS&&pcS.sub,temp,depth,L:+L.toFixed(1),a:+a.toFixed(1),b:+b.toFixed(1),h:+h.toFixed(1),sd:+sd.toFixed(1),fhL:Math.round(fhL),conf,order:LOOK_ORDER.join(',')};
   log.tone=tone; $('look').value=LOOK_ORDER[0]; log.preview={seen:[LOOK_ORDER[0]]}; pvStart=performance.now();
   const T=toneText(); say(`${T.label}으로 보여요. ${LOOKS[LOOK_ORDER[0]].name} 블러셔를 먼저 추천해 드릴게요.`); render();
 }
 function toneText(){
+  if(tone.pcSeason) return {label:`퍼스널컬러 ${PC_NAME[tone.pcSeason]} ${PC_SUB[tone.pcSub]||''}`.trim(), why:`측정한 퍼스널컬러 기준으로 ${LOOK_ORDER.slice(0,2).map(k=>LOOKS[k].name).join('·')} 순으로 먼저 추천했어요`};
   const tl={warm:'웜',cool:'쿨',neutral:'뉴트럴'}[tone.temp], dl=tone.depth==='light'?'밝은 톤':'깊은 톤';
   const why={warm:'피부에 노란 기가 도는 편이라',cool:'피부에 붉은·푸른 기가 도는 편이라',neutral:'노란 기와 붉은 기가 고르게 섞여 있어'}[tone.temp];
   return {label:`${tl} · ${dl}`, why:`${why} ${LOOK_ORDER.slice(0,2).map(k=>LOOKS[k].name).join('·')} 순으로 먼저 추천했어요`};
@@ -410,6 +412,154 @@ function synthPaint(g,ox,oy){
 }
 const synLog=()=>synOn()?{side:$('synSide').value,a:+($('synA').value/100).toFixed(2),off:+($('synOff').value/100).toFixed(2)}:undefined;
 
+// ================= 퍼스널컬러 측정 (v31) =================
+// 흰 종이로 조명 색·밝기 보정 → 피부(볼·이마·턱)·눈썹·눈동자 색 측정 → 언더톤·명도·채도·대비로 4계절+세부 톤
+let appMode='blush', pcStep=0, pcBuf=[], pcT=0, pcRes=null, pcNoPaper=false, pcLive=null;
+const PC_N=20;                        // 측정 프레임 수 (약 2초)
+const PAPER_L=92; const PAPER_VS_SKIN=1.25; // 종이 밝기(선형)가 피부의 1.25배 이상이어야 종이로 인정
+                    // 흰 종이를 이 밝기(L*)로 맞춤 → 노출 차이도 보정
+// 판정 기준 (보정 후 값 기준, 참고용 — 실측 로그로 조정)
+const PC_TH={warmH:57, coolH:52, lightL:66, deepL:58, clearC:24, mutedC:19, hiCon:42, loCon:32};
+const PC_ORDER={spring:['peach','coral','pink','rose'],summer:['pink','rose','peach','coral'],autumn:['coral','peach','rose','pink'],winter:['rose','pink','coral','peach']};
+const PC_NAME={spring:'봄 웜',summer:'여름 쿨',autumn:'가을 웜',winter:'겨울 쿨'};
+const PC_SUB={light:'라이트',muted:'뮤트',deep:'딥',bright:'브라이트'};
+const PC_PAL={
+  spring:{best:['#FF9E80','#FFB38A','#FFD27F','#A8D86E','#7FD4C1','#FF7F6A'],avoid:['#2F3A4A','#6A2C70','#8A8FA0']},
+  summer:{best:['#F4A7B9','#C8A2C8','#A7C7E7','#B9D7E8','#E6B8C2','#9FB7D9'],avoid:['#FF8C00','#B8860B','#8B4513']},
+  autumn:{best:['#C66B3D','#B5651D','#8A9A5B','#D2A26B','#A0522D','#CC8A22'],avoid:['#FF69B4','#DDF3FF','#1A1A8B']},
+  winter:{best:['#1C1C4C','#C2185B','#0047AB','#FFFFFF','#DC143C','#4B0082'],avoid:['#F5DEB3','#DAA520','#CD853F']},
+};
+const BROWS=[70,63,105,66,107,300,293,334,296,336], CHIN=[199,175,200], IRIS_RING=[469,470,471,472,474,475,476,477];
+const lin=c=>{c/=255;return c<=.04045?c/12.92:((c+.055)/1.055)**2.4}, unlin=v=>255*Math.min(1,Math.max(0,v<=.0031308?12.92*v:1.055*v**(1/2.4)-.055));
+function meanRGB(img,cx,cy,r){ // 원형 영역의 선형 RGB 평균·표준편차(sRGB)
+  const W=img.width,H=img.height,d=img.data; let s=[0,0,0],q=[0,0,0],n=0;
+  for(let y=Math.max(0,Math.round(cy-r));y<=Math.min(H-1,Math.round(cy+r));y+=2)for(let x=Math.max(0,Math.round(cx-r));x<=Math.min(W-1,Math.round(cx+r));x+=2){const k=(y*W+x)*4;for(let c=0;c<3;c++){s[c]+=lin(d[k+c]);q[c]+=d[k+c]**2}n++}
+  if(!n) return null; const m=s.map(v=>v/n); return {lin:m, sd:Math.sqrt(q.reduce((t,v,c)=>t+v/n-(unlin(m[c]))**2,0)/3)};
+}
+function pcBox(){ // 얼굴 옆 종이 영역 (여유 있는 쪽)
+  const fl=P(FACE_L), fr=P(FACE_R), fw=Math.abs(fr.x-fl.x), cy=(P(117).y+P(346).y)/2;
+  const right=Math.max(fl.x,fr.x), left=Math.min(fl.x,fr.x), w=fw*.36, h=fw*.5;
+  const x=(cv.width-right>=left)?right+fw*.08:left-fw*.08-w;
+  return {x:Math.max(0,x),y:Math.max(0,cy-h/2),w,h};
+}
+function pcMeasure(){
+  if(!lm) return null;
+  off.width=Math.max(off.width,cv.width); off.height=Math.max(off.height,cv.height);
+  octx.drawImage(video,0,0,cv.width,cv.height); const img=octx.getImageData(0,0,cv.width,cv.height);
+  const fw=Math.abs(P(FACE_R).x-P(FACE_L).x), r=Math.max(3,fw*.018);
+  // 종이: 사각형 안쪽 9곳 → 평균·균일도
+  const b=pcBox(), pp=[]; for(const fx of [.25,.5,.75])for(const fy of [.25,.5,.75]){const m=meanRGB(img,b.x+b.w*fx,b.y+b.h*fy,Math.min(b.w,b.h)*.12); if(m) pp.push(m.lin)}
+  const pm=[0,1,2].map(c=>pp.reduce((t,v)=>t+v[c],0)/pp.length), ps=pm.map(unlin);
+  const spread=Math.max(...pp.map(v=>Math.max(...v.map((x,c)=>Math.abs(unlin(x)-ps[c])))));
+  const sat=(Math.max(...ps)-Math.min(...ps))/Math.max(1,Math.max(...ps));
+  const paper={rgb:ps.map(Math.round),bright:Math.max(...ps),sat,spread};
+  // 피부: 볼 안쪽(가장자리 제외)·이마·턱
+  const z=zones(), pick=s=>s.inner.filter((_,i)=>i===0||(i-1)%4<2);
+  const skinPts=[...pick(z.left),...pick(z.right),...FOREHEAD.map(P),...CHIN.map(P)];
+  const skin=skinPts.map(p=>meanRGB(img,p.x,p.y,r)).filter(Boolean).map(m=>m.lin);
+  const brow=BROWS.map(i=>meanRGB(img,P(i).x,P(i).y,r*.6)).filter(Boolean).map(m=>m.lin);
+  const iris=lm.length>=478?IRIS_RING.map(i=>meanRGB(img,P(i).x,P(i).y,Math.max(2,r*.4))).filter(Boolean).map(m=>m.lin):[];
+  // 같은 빛의 흰 종이는 피부보다 확실히 밝음 → 회색 벽·배경을 종이로 오인하지 않게 (v31: 회색 배경을 종이로 보정해 피부가 +10 밝게 측정됨)
+  const skinY=skin.length?medArr(skin.map(v=>.2126*v[0]+.7152*v[1]+.0722*v[2])):0, paperY=.2126*lin(ps[0])+.7152*lin(ps[1])+.0722*lin(ps[2]);
+  paper.vsSkin=+(paperY/Math.max(1e-4,skinY)).toFixed(2);
+  paper.ok=paper.bright>=120&&paper.bright<=250&&sat<=.35&&spread<=18&&paper.vsSkin>=PAPER_VS_SKIN;
+  const nose=P(NOSE), yaw=(nose.x-(P(FACE_L).x+P(FACE_R).x)/2)/(fw/2);
+  return {paper,skin,brow,iris,yaw,fwRatio:fw/cv.width};
+}
+const medArr=a=>{const v=[...a].sort((x,y)=>x-y);return v.length?v[v.length>>1]:0};
+function toLab(linRGB,gain){ return rgb2lab(...linRGB.map((v,c)=>unlin(v*gain[c]))); }
+function pcCompute(){
+  // 흰 종이 보정 이득: 종이가 L* 92의 무채색이 되도록 채널별 배율 (종이 없으면 1)
+  const usePaper=!pcNoPaper;
+  const pm=[0,1,2].map(c=>medArr(pcBuf.map(f=>lin(f.paper.rgb[c]))));
+  const Yt=((PAPER_L+16)/116)**3, gain=usePaper?pm.map(v=>Yt/Math.max(1e-4,v)):[1,1,1];
+  const labsOf=k=>pcBuf.flatMap(f=>f[k].map(v=>toLab(v,gain)));
+  const med3=arr=>[0,1,2].map(i=>medArr(arr.map(q=>q[i])));
+  const skin=med3(labsOf('skin')), brow=med3(labsOf('brow')), irisArr=labsOf('iris'), iris=irisArr.length?med3(irisArr):null;
+  const h=Math.atan2(skin[2],skin[1])*180/Math.PI, C=Math.hypot(skin[1],skin[2]), L=skin[0];
+  const feat=Math.min(brow[0],iris?iris[0]:99), con=L-feat;
+  // 프레임별 색상각 흔들림
+  const hs=pcBuf.map(f=>{const s=med3(f.skin.map(v=>toLab(v,gain)));return Math.atan2(s[2],s[1])*180/Math.PI});
+  const hSd=Math.sqrt(hs.reduce((t,v)=>t+(v-h)**2,0)/hs.length);
+  const T=PC_TH, warm=h>=(T.warmH+T.coolH)/2;
+  const tempScore=(h-(T.warmH+T.coolH)/2)/((T.warmH-T.coolH)/2); // +웜 / -쿨, |1| 이상이면 뚜렷
+  const lightS=(L-(T.lightL+T.deepL)/2)/((T.lightL-T.deepL)/2), clearS=(C-(T.clearC+T.mutedC)/2)/((T.clearC-T.mutedC)/2), conS=(con-(T.hiCon+T.loCon)/2)/((T.hiCon-T.loCon)/2);
+  let season; if(warm) season=(lightS+clearS)>=0?'spring':'autumn'; else season=(conS+clearS-lightS)>=0?'winter':'summer';
+  // 세부 톤: 가장 두드러진 축
+  const cand={spring:{light:lightS,bright:clearS},summer:{light:lightS,muted:-clearS},autumn:{muted:-clearS,deep:-lightS},winter:{deep:-lightS,bright:clearS+conS*.5}}[season];
+  const sub=Object.entries(cand).sort((a,b)=>b[1]-a[1])[0][0];
+  // 호수 (참고): 보정 L* 기준 — 파운데이션 호수 근사
+  const ho=L>=73?13:L>=70?17:L>=67?19:L>=64?21:L>=60?23:25;
+  // 정확도
+  const paperOk=usePaper&&pcBuf.filter(f=>f.paper.ok).length>=PC_N*.8;
+  let score=0; if(paperOk) score+=2; if(hSd<=2.5) score+=1; if(Math.abs(tempScore)>=.6) score+=1; if(Math.max(Math.abs(lightS),Math.abs(clearS),Math.abs(conS))>=.5) score+=1;
+  const conf=score>=4?'높음':score>=2?'보통':'낮음';
+  const wbCast=usePaper?{r:+(gain[0]/gain[1]).toFixed(2),b:+(gain[2]/gain[1]).toFixed(2)}:null; // 1보다 크면 그 색이 부족한 조명
+  return {season,sub,ho,conf,usePaper,paperOk,gain:gain.map(v=>+v.toFixed(3)),wbCast,
+    skin:skin.map(v=>+v.toFixed(1)),brow:brow.map(v=>+v.toFixed(1)),iris:iris&&iris.map(v=>+v.toFixed(1)),
+    h:+h.toFixed(1),C:+C.toFixed(1),L:+L.toFixed(1),con:+con.toFixed(1),hSd:+hSd.toFixed(1),
+    scores:{temp:+tempScore.toFixed(2),light:+lightS.toFixed(2),clear:+clearS.toFixed(2),contrast:+conS.toFixed(2)},ts:new Date().toISOString()};
+}
+function pcHistory(){ try{return JSON.parse(localStorage.getItem('pcHist')||'[]')}catch(e){return []} }
+function pcSave(r){ try{const h=pcHistory();h.push({season:r.season,sub:r.sub,conf:r.conf,ts:r.ts});localStorage.setItem('pcHist',JSON.stringify(h.slice(-5)));localStorage.setItem('pcResult',JSON.stringify({season:r.season,sub:r.sub,conf:r.conf,ts:r.ts}))}catch(e){} }
+function pcSaved(){ try{const r=JSON.parse(localStorage.getItem('pcResult')||'null'); return r&&(Date.now()-Date.parse(r.ts))<30*864e5?r:null}catch(e){return null} }
+function pcTick(t){
+  if(!lm||t-pcT<100) return; pcT=t;
+  const m=pcMeasure(); if(!m) return; pcLive=m;
+  if(pcStep===2){
+    const ok=Math.abs(m.yaw)<=.08&&(pcNoPaper||m.paper.ok);
+    if(ok){ pcBuf.push(m); const el=$('pcProg'); if(el) el.textContent=`측정 중… ${Math.round(pcBuf.length/PC_N*100)}%`; }
+    if(pcBuf.length>=PC_N){ pcRes=pcCompute(); pcSave(pcRes); log.pc=pcRes; pcStep=3; say(`${PC_NAME[pcRes.season]} ${PC_SUB[pcRes.sub]}으로 보여요.`); render(); }
+  } else if(pcStep===1) pcStatus(m);
+}
+function pcStatus(m){
+  const el=$('pcChk'), btn=$('pcGo'); if(!el) return;
+  const items=[[Math.abs(m.yaw)<=.08,'정면을 봐 주세요'],[m.fwRatio>=.3,'조금 더 가까이 와 주세요'],[pcNoPaper||m.paper.ok,m.paper.bright<120?'종이가 어두워요 — 종이를 사각형 안에, 얼굴과 같은 빛을 받게':m.paper.bright>250?'종이가 너무 밝아 하얗게 날아가요 — 직사광을 피해 주세요':m.paper.vsSkin<PAPER_VS_SKIN?'사각형 안에 흰 종이가 안 보여요 — 벽이 아닌 흰 종이를 대 주세요':'사각형 안을 흰 종이로 가득 채워 주세요']];
+  const bad=items.find(([ok])=>!ok);
+  el.className='msg '+(bad?'warn':'ok'); el.textContent=bad?bad[1]:'좋아요! 측정 시작을 눌러 주세요. (2초 동안 움직이지 마세요)';
+  btn.disabled=!!bad;
+}
+function pcDraw(t){
+  if(pcStep===1||pcStep===2){
+    if(!pcNoPaper){ const b=pcBox(), ok=pcLive&&pcLive.paper.ok;
+      ctx.save(); ctx.setLineDash([10,6]); ctx.lineWidth=3; ctx.strokeStyle=ok?'#3ddc84':'#ffffff'; ctx.shadowColor='rgba(0,0,0,.6)'; ctx.shadowBlur=4; ctx.strokeRect(b.x,b.y,b.w,b.h); ctx.restore(); }
+    const z=zones(); ctx.strokeStyle='rgba(255,255,255,.5)'; ctx.lineWidth=1.5;
+    for(const s of [z.left,z.right]){const e=ellipseOf(s.edge);ctx.beginPath();ctx.ellipse(e.x,e.y,e.a,e.b,e.rot,0,Math.PI*2);ctx.stroke()}
+  }
+}
+function swatches(arr){return arr.map(c=>`<span style="display:inline-block;width:30px;height:30px;border-radius:8px;margin:2px;background:${c};border:1px solid #ddd"></span>`).join('')}
+function pcRender(){
+  ['s0','s1','s2','s3'].forEach((id,i)=>{$(id).className=i<pcStep?'done':i===pcStep?'on':''});
+  if(pcStep===1){
+    view.innerHTML=`<h2>퍼스널컬러 측정</h2>
+      <p><b>맨얼굴</b>로, 흰 종이(A4 등)를 화면의 <b>사각형 안</b>에 얼굴 옆으로 들어 주세요. 종이로 조명 색을 보정해요.</p>
+      <p class="small">창가 자연광이 가장 좋아요. 종이가 얼굴과 같은 빛을 받게 해 주세요. 영상은 기기 안에서만 처리돼요.</p>
+      <div id="pcChk" class="msg info">얼굴을 찾는 중…</div>
+      <div class="row"><button class="pri" id="pcGo" disabled>측정 시작</button></div>
+      <div class="row"><button id="pcNoP">${pcNoPaper?'흰 종이로 보정하기':'흰 종이 없이 측정 (정확도 낮음)'}</button></div>`;
+    $('pcGo').onclick=()=>{pcBuf=[];pcStep=2;render();};
+    $('pcNoP').onclick=()=>{pcNoPaper=!pcNoPaper;render();};
+  } else if(pcStep===2){
+    view.innerHTML=`<h2>측정 중</h2><p>움직이지 말고 정면을 봐 주세요${pcNoPaper?'':'. 종이도 그대로 들어 주세요'}.</p><div class="msg info" id="pcProg">측정 중… 0%</div>`;
+  } else if(pcStep===3){
+    const r=pcRes, pal=PC_PAL[r.season], hist=pcHistory(), same=hist.filter(x=>x.season===r.season).length;
+    view.innerHTML=`<h2>${PC_NAME[r.season]} · ${PC_SUB[r.sub]}</h2>
+      <div class="msg ${r.conf==='높음'?'ok':r.conf==='보통'?'info':'warn'}" style="font-weight:500">정확도 <b>${r.conf}</b>${r.usePaper?(r.paperOk?' · 흰 종이 보정됨':' · 종이 인식이 불안정했어요'):' · 흰 종이 보정 없음'}<br>
+        <span class="small">최근 측정 ${hist.length}회 중 ${same}회 ${PC_NAME[r.season]} · 참고용 결과예요 (조명·카메라에 따라 달라질 수 있어요)</span></div>
+      <p class="small">피부 언더톤 ${r.scores.temp>=0?'웜':'쿨'} · 명도 ${r.scores.light>=0?'밝은 편':'깊은 편'} · 채도 ${r.scores.clear>=0?'맑은 편':'부드러운 편'} · 이목구비 대비 ${r.scores.contrast>=0?'높은 편':'낮은 편'} · 피부 밝기 약 ${r.ho}호</p>
+      <p style="margin-bottom:2px"><b>잘 어울리는 색</b></p><div>${swatches(pal.best)}</div>
+      <p style="margin:8px 0 2px"><b>피하면 좋은 색</b></p><div>${swatches(pal.avoid)}</div>
+      <p style="margin:8px 0 2px"><b>추천 블러셔</b> — ${PC_ORDER[r.season].slice(0,2).map(k=>`<span style="display:inline-block;width:14px;height:14px;border-radius:50%;vertical-align:-2px;background:${LOOKS[k].hex}"></span> ${LOOKS[k].name}`).join(' · ')}</p>
+      <p class="small">아래 로그를 복사해 보내 주세요. 기준값 조정에 써요. (얼굴 이미지는 포함되지 않아요)</p>
+      <textarea id="logTxt" readonly>${JSON.stringify(log,null,1)}</textarea>
+      <div class="row"><button class="pri" id="btnCopy">로그 복사</button><button id="pcAgain">다시 측정</button></div>
+      <div class="row"><button class="go" id="pcToBlush">이 결과로 블러셔 하기</button></div>`;
+    $('btnCopy').onclick=async()=>{try{await navigator.clipboard.writeText($('logTxt').value);$('btnCopy').textContent='복사됨'}catch(e){$('logTxt').select();$('btnCopy').textContent='길게 눌러 복사'}};
+    $('pcAgain').onclick=()=>{pcBuf=[];pcStep=1;render();};
+    $('pcToBlush').onclick=()=>{appMode='blush';step=-1;tone=null;toneBuf=[];pvStart=performance.now();render();};
+  }
+}
+
 // ---------- 그리기 ----------
 // 화면 떨림 줄이기: 윤곽 점을 이전 프레임과 섞음
 const ema={}; function steady(key,pts,k=.65){const o=ema[key];if(!o||o.length!==pts.length){ema[key]=pts.map(p=>({...p}));return ema[key]}for(let i=0;i<pts.length;i++){o[i].x+=(pts[i].x-o[i].x)*k;o[i].y+=(pts[i].y-o[i].y)*k}return o}
@@ -437,6 +587,7 @@ function softZone(s,alpha,warn){
 }
 function draw(t){
   ctx.clearRect(0,0,cv.width,cv.height);
+  if(appMode==='pc'){ if(lm) pcDraw(t); return; }
   if(!lm){return}
   const z=zones();
   if(step===-1){ // 완성 모습 미리보기: 룩 색 블러셔를 가상으로 입힘
@@ -484,6 +635,7 @@ const view=$('view');
 function stepsBar(){['s0','s1','s2','s3'].forEach((id,i)=>{$(id).className=i<step+1?'done':i===step+1?'on':''})}
 function meterRow(label,v,mark,txt){return `<span>${label}</span><div class="bar"><i style="width:${Math.max(0,Math.min(100,v*100))}%"></i>${mark!=null?`<s style="left:${mark*100}%"></s>`:''}</div><span class="num">${txt}</span>`}
 function render(){
+  if(appMode==='pc') return pcRender();
   stepsBar();
   const th=TH[$('strength').value];
   if(step===-1&&!tone){
@@ -626,6 +778,7 @@ function loop(t){
   try{ const t0=performance.now(); const res=landmarker.detectForVideo(video,t); detMs=detMs*.8+(performance.now()-t0)*.2;
     lm=res.faceLandmarks&&res.faceLandmarks[0]||null; }catch(e){noteErr('인식',e)}
   try{
+    if(appMode==='pc') pcTick(t);
     if(step===0) checkPose();
     if(step===-1&&!tone&&lm&&t-toneT>150){ toneT=t; const q=toneSample(), el=$('toneMsg');
       if(q&&Math.abs(q.yaw)<=.1&&q.fhL>=35&&q.fhL<=90){ toneBuf.push(q); if(el){el.className='msg info';el.textContent=`피부 톤 확인 중… ${Math.min(100,Math.round(toneBuf.length/10*100))}%`} if(toneBuf.length>=10) finishTone(); }
@@ -675,11 +828,12 @@ function checkPose(){
 // ---------- 시작 ----------
 // 단계마다 시간 제한: 멈추면 어느 단계에서 멈췄는지 화면에 표시
 const withTimeout=(p,ms,stage)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`${stage} 단계가 ${ms/1000}초 안에 끝나지 않았어요`)),ms))]);
-const VER='v30 · 11-23';
+const VER='v31 · 11-25';
 // 영상 크기가 잡힐 때까지 100ms마다 확인 (iOS는 이벤트가 안 오는 경우가 있어 폴링)
 const waitVideo=ms=>new Promise(res=>{const t0=performance.now();const tick=()=>{if(video.videoWidth>0) return res(true); if(performance.now()-t0>ms) return res(false); setTimeout(tick,100)};tick();});
 let ticker=0; const progress=(n,text)=>{const msg=$('loadMsg'),t0=performance.now();clearInterval(ticker);const f=()=>msg.textContent=`[${n}/3] ${text} · ${Math.round((performance.now()-t0)/1000)}초 (${VER})`;f();ticker=setInterval(f,1000);};
 $('btnStart').onclick=()=>startApp(null);
+$('btnPC').onclick=()=>startApp(null,'pc');
 $('btnVideo').onclick=()=>$('vidFile').click();
 $('vidFile').onchange=e=>{const f=e.target.files&&e.target.files[0]; if(f) startApp(f);};
 let vDrag=false;
@@ -689,8 +843,8 @@ $('vSeek').oninput=e=>{vDrag=true; if(video.duration) video.currentTime=video.du
 $('vSeek').onchange=()=>{vDrag=false};
 setInterval(()=>{ if($('vctl').hidden||vDrag||!video.duration) return; $('vSeek').value=Math.round(video.currentTime/video.duration*1000); $('vTime').textContent=fmtT(video.currentTime)+' / '+fmtT(video.duration); },250);
 $('synA').oninput=e=>{$('synAv').textContent=(e.target.value/100).toFixed(2)};
-async function startApp(file){
-  const msg=$('loadMsg'); $('btnStart').disabled=true; $('btnVideo').disabled=true;
+async function startApp(file,mode){
+  const msg=$('loadMsg'); $('btnStart').disabled=true; $('btnVideo').disabled=true; $('btnPC').disabled=true;
   if('speechSynthesis' in window&&$('tts').checked){try{speechSynthesis.speak(new SpeechSynthesisUtterance(''))}catch(e){}} // iOS: 버튼 누를 때 음성 잠금 해제
   let stage='카메라 권한';
   try{
@@ -723,10 +877,11 @@ async function startApp(file){
     catch(e){progress(3,'GPU 모드 실패 → CPU 모드로 다시 시도 중…'); log.gpuError=String(e&&e.message||e); landmarker=await withTimeout(FaceLandmarker.createFromOptions(files,opts("CPU")),60000,stage+'(CPU)')}
     log.delegate=log.gpuError?'CPU':'GPU';
     clearInterval(ticker); $('start').hidden=true; $('panel').hidden=false;
+    if(mode==='pc'){ appMode='pc'; step=99; pcStep=1; log.mode='pc'; say('흰 종이를 얼굴 옆 사각형 안에 들어 주세요.'); render(); raf=requestAnimationFrame(loop); return; }
     step=-1; pvStart=performance.now(); log.preview={seen:[$('look').value]};
     say('완성 모습을 먼저 보여 드릴게요.'); render(); raf=requestAnimationFrame(loop);
   }catch(e){
-    clearInterval(ticker); $('btnStart').disabled=false; $('btnVideo').disabled=false;
+    clearInterval(ticker); $('btnStart').disabled=false; $('btnVideo').disabled=false; $('btnPC').disabled=false;
     msg.textContent=(e&&e.name==='NotAllowedError')?'카메라 권한이 거부됐어요. 설정 → Safari → 카메라 → 허용 후 새로고침해 주세요.':`시작하지 못했어요 [${stage}]: `+(e&&(e.name?e.name+' ':'')+(e.message||e));
   }
 };
